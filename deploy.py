@@ -120,7 +120,7 @@ def deploy(runtime_name, endpoint_name, is_prod=False, force_create=False, force
     if not verify_s3_bucket():
         return False
     
-    client = boto3.client('bedrock-agentcore-control', region_name=REGION)
+    client = boto3.client('bedrock-agentcore', region_name=REGION)
     
     # Create deployment package and upload
     zip_path = create_deployment_package()
@@ -166,7 +166,7 @@ def deploy(runtime_name, endpoint_name, is_prod=False, force_create=False, force
                         'code': {
                             's3': {
                                 'bucket': bucket,
-                                'prefix': key
+                                'key': key
                             }
                         },
                         'runtime': 'PYTHON_3_11',
@@ -201,7 +201,7 @@ def deploy(runtime_name, endpoint_name, is_prod=False, force_create=False, force
                         'code': {
                             's3': {
                                 'bucket': bucket,
-                                'prefix': key
+                                'key': key
                             }
                         },
                         'runtime': 'PYTHON_3_11',
