@@ -32,8 +32,8 @@ jobs:
       - name: Deploy PR Runtime
         id: deploy
         run: |
-          RUNTIME_NAME="demo-pr-${{ github.event.pull_request.number }}-runtime"
-          ENDPOINT_NAME="PR-${{ github.event.pull_request.number }}-Endpoint"
+          RUNTIME_NAME="demo_pr_${{ github.event.pull_request.number }}_runtime"
+          ENDPOINT_NAME="PR_${{ github.event.pull_request.number }}_Endpoint"
           
           # Use --create for opened/reopened, --update for subsequent commits
           if [ "${{ github.event.action }}" == "opened" ] || [ "${{ github.event.action }}" == "reopened" ]; then

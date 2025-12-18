@@ -31,4 +31,4 @@ jobs:
       
       - name: Deploy to Production Runtime
         run: |
-          python deploy.py "demo-prod-runtime" "demo-prod-endpoint" --prod
+          python deploy.py "demo_prod_runtime" "demo_prod_endpoint" --prod

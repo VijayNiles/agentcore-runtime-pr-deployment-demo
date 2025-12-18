@@ -8,8 +8,8 @@ This demo showcases how to implement PR-based deployment workflows for agents on
 
 ## Architecture
 
-- **Shared PROD Runtime**: `demo-prod-runtime` with versioned deployments
-- **Ephemeral PR Runtimes**: `demo-pr-{NUMBER}-runtime` created per PR
+- **Shared PROD Runtime**: `demo_prod_runtime` with versioned deployments
+- **Ephemeral PR Runtimes**: `demo_pr_{NUMBER}_runtime` created per PR
 - **Direct Code Deployment**: Using Custom zip + boto3 method with AgentCore Control APIs
 - **S3 Bucket**: `agentcore-runtime-pr-deployment-demo`
 - **Agent Framework**: Strands Agents with BedrockAgentCoreApp

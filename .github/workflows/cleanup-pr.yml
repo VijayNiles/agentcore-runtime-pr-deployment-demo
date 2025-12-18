@@ -20,7 +20,7 @@ jobs:
       
       - name: Delete PR Runtime
         run: |
-          RUNTIME_NAME="demo-pr-${{ github.event.pull_request.number }}-runtime"
+          RUNTIME_NAME="demo_pr_${{ github.event.pull_request.number }}_runtime"
           
           echo "🗑️  Deleting runtime: $RUNTIME_NAME"
           
