@@ -166,7 +166,7 @@ def deploy(runtime_name, endpoint_name, is_prod=False, force_create=False, force
                         'code': {
                             's3': {
                                 'bucket': bucket,
-                                'key': key
+                                'prefix': key
                             }
                         },
                         'runtime': 'PYTHON_3_11',
@@ -201,7 +201,7 @@ def deploy(runtime_name, endpoint_name, is_prod=False, force_create=False, force
                         'code': {
                             's3': {
                                 'bucket': bucket,
-                                'key': key
+                                'prefix': key
                             }
                         },
                         'runtime': 'PYTHON_3_11',
