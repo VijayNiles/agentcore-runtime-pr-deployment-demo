@@ -47,18 +47,18 @@ The `AccessDeniedException` indicates missing permissions on `GitHub-Actions-Rol
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "BedrockAgentCoreAccess",
+      "Sid": "BedrockAgentCoreControlAccess",
       "Effect": "Allow",
       "Action": [
-        "bedrock-agentcore:CreateAgentRuntime",
-        "bedrock-agentcore:UpdateAgentRuntime",
-        "bedrock-agentcore:GetAgentRuntime",
-        "bedrock-agentcore:ListAgentRuntimes",
-        "bedrock-agentcore:DeleteAgentRuntime",
-        "bedrock-agentcore:CreateAgentRuntimeEndpoint",
-        "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
-        "bedrock-agentcore:ListAgentRuntimeEndpoints",
-        "bedrock-agentcore:DeleteAgentRuntimeEndpoint"
+        "bedrock-agentcore-control:CreateAgentRuntime",
+        "bedrock-agentcore-control:UpdateAgentRuntime",
+        "bedrock-agentcore-control:GetAgentRuntime",
+        "bedrock-agentcore-control:ListAgentRuntimes",
+        "bedrock-agentcore-control:DeleteAgentRuntime",
+        "bedrock-agentcore-control:CreateAgentRuntimeEndpoint",
+        "bedrock-agentcore-control:UpdateAgentRuntimeEndpoint",
+        "bedrock-agentcore-control:ListAgentRuntimeEndpoints",
+        "bedrock-agentcore-control:DeleteAgentRuntimeEndpoint"
       ],
       "Resource": "*"
     },

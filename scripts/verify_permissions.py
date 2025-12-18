@@ -12,18 +12,18 @@ ROLE_ARN = 'arn:aws:iam::788835021449:role/AgentCoreRunTimeRole'
 S3_BUCKET = 'agentcore-runtime-pr-deployment-demo'
 
 def test_bedrock_agentcore_permissions():
-    """Test bedrock-agentcore API access"""
-    print("🔍 Testing Bedrock AgentCore permissions...")
-    client = boto3.client('bedrock-agentcore', region_name=REGION)
+    """Test bedrock-agentcore-control API access"""
+    print("🔍 Testing Bedrock AgentCore Control permissions...")
+    client = boto3.client('bedrock-agentcore-control', region_name=REGION)
     
     try:
         response = client.list_agent_runtimes()
-        print(f"✅ bedrock-agentcore:ListAgentRuntimes - SUCCESS")
+        print(f"✅ bedrock-agentcore-control:ListAgentRuntimes - SUCCESS")
         print(f"   Found {len(response.get('agentRuntimes', []))} runtimes")
         return True
     except ClientError as e:
         error_code = e.response['Error']['Code']
-        print(f"❌ bedrock-agentcore:ListAgentRuntimes - FAILED")
+        print(f"❌ bedrock-agentcore-control:ListAgentRuntimes - FAILED")
         print(f"   Error: {error_code} - {e.response['Error']['Message']}")
         return False
 

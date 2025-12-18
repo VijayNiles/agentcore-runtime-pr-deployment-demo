@@ -24,10 +24,10 @@ def main():
         print(f"   ❌ Authentication failed: {e}\n")
         return False
     
-    # Test 2: Test bedrock-agentcore service access
-    print("2️⃣  Testing bedrock-agentcore service...")
+    # Test 2: Test bedrock-agentcore-control service access
+    print("2️⃣  Testing bedrock-agentcore-control service...")
     try:
-        client = boto3.client('bedrock-agentcore', region_name=REGION)
+        client = boto3.client('bedrock-agentcore-control', region_name=REGION)
         response = client.list_agent_runtimes()
         runtimes = response.get('agentRuntimes', [])
         print(f"   ✅ Service accessible. Found {len(runtimes)} runtimes")
@@ -37,13 +37,13 @@ def main():
     except ClientError as e:
         error_code = e.response['Error']['Code']
         if error_code == 'AccessDeniedException':
-            print(f"   ❌ ACCESS DENIED to bedrock-agentcore")
+            print(f"   ❌ ACCESS DENIED to bedrock-agentcore-control")
             print(f"   📋 Add this policy to GitHub-Actions-Role:")
             print("""
    {
      "Effect": "Allow",
      "Action": [
-       "bedrock-agentcore:*"
+       "bedrock-agentcore-control:*"
      ],
      "Resource": "*"
    }

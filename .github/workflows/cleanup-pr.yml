@@ -25,14 +25,14 @@ jobs:
           echo "🗑️  Deleting runtime: $RUNTIME_NAME"
           
           # Get runtime ID from name
-          RUNTIME_ID=$(aws bedrock-agentcore list-agent-runtimes --region us-east-1 --query "agentRuntimes[?agentRuntimeName=='$RUNTIME_NAME'].agentRuntimeId" --output text)
+          RUNTIME_ID=$(aws bedrock-agentcore-control list-agent-runtimes --region us-east-1 --query "agentRuntimes[?agentRuntimeName=='$RUNTIME_NAME'].agentRuntimeId" --output text)
           
           if [ -n "$RUNTIME_ID" ]; then
             echo "Found runtime ID: $RUNTIME_ID"
             
             # Delete all endpoints first
             echo "🔍 Listing endpoints for runtime..."
-            ENDPOINTS=$(aws bedrock-agentcore list-agent-runtime-endpoints \
+            ENDPOINTS=$(aws bedrock-agentcore-control list-agent-runtime-endpoints \
               --agent-runtime-id "$RUNTIME_ID" \
               --region us-east-1 \
               --query "agentRuntimeEndpoints[].name" \
@@ -41,7 +41,7 @@ jobs:
             if [ -n "$ENDPOINTS" ]; then
               for ENDPOINT in $ENDPOINTS; do
                 echo "🗑️  Deleting endpoint: $ENDPOINT"
-                aws bedrock-agentcore delete-agent-runtime-endpoint \
+                aws bedrock-agentcore-control delete-agent-runtime-endpoint \
                   --agent-runtime-id "$RUNTIME_ID" \
                   --endpoint-name "$ENDPOINT" \
                   --region us-east-1 || echo "⚠️  Failed to delete endpoint $ENDPOINT"
@@ -52,7 +52,7 @@ jobs:
             
             # Now delete the runtime
             echo "🗑️  Deleting runtime..."
-            aws bedrock-agentcore delete-agent-runtime \
+            aws bedrock-agentcore-control delete-agent-runtime \
               --agent-runtime-id "$RUNTIME_ID" \
               --region us-east-1 || echo "❌ Failed to delete runtime"
           else

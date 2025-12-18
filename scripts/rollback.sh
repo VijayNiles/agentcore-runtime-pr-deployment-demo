@@ -18,7 +18,7 @@ echo "⏳ Checking runtime status..."
 MAX_WAIT=300
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do
-    STATUS=$(aws bedrock-agentcore get-agent-runtime \
+    STATUS=$(aws bedrock-agentcore-control get-agent-runtime \
         --agent-runtime-id "$RUNTIME_ID" \
         --region "$REGION" \
         --query 'status' \
@@ -42,7 +42,7 @@ if [ $ELAPSED -ge $MAX_WAIT ]; then
     exit 1
 fi
 
-aws bedrock-agentcore update-agent-runtime-endpoint \
+aws bedrock-agentcore-control update-agent-runtime-endpoint \
     --agent-runtime-id "$RUNTIME_ID" \
     --endpoint-name "$ENDPOINT_NAME" \
     --agent-runtime-version "$VERSION" \
