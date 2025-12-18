@@ -21,16 +21,13 @@ def create_deployment_package():
         shutil.rmtree(temp_dir)
     os.makedirs(temp_dir)
     
-    print("📦 Installing dependencies for ARM64...")
+    print("📦 Installing dependencies...")
     try:
-        # Install dependencies for ARM64 (AgentCore Runtime architecture)
+        # Install dependencies (pure Python packages)
         subprocess.run([
             "pip", "install",
             "-r", "agent/requirements.txt",
-            "-t", temp_dir,
-            "--platform", "manylinux2014_aarch64",
-            "--only-binary", ":all:",
-            "--python-version", "3.11"
+            "-t", temp_dir
         ], check=True, capture_output=True, text=True)
         print("✓ Dependencies installed")
     except subprocess.CalledProcessError as e:
