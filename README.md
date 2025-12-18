@@ -10,14 +10,16 @@ This demo showcases how to implement PR-based deployment workflows for agents on
 
 - **Shared PROD Runtime**: `demo-prod-runtime` with versioned deployments
 - **Ephemeral PR Runtimes**: `demo-pr-{NUMBER}-runtime` created per PR
-- **Direct Code Deployment**: Using AWS bedrock-agentcore-starter-toolkit
+- **Direct Code Deployment**: Using Custom zip + boto3 method with AgentCore Control APIs
 - **S3 Bucket**: `agentcore-runtime-pr-deployment-demo`
+- **Agent Framework**: Strands Agents with BedrockAgentCoreApp
+- **Execution Role**: `AgentCoreRunTimeRole` with BedrockAgentCoreFullAccess and S3 access
 
 ## Prerequisites
 
 ```bash
 # Install dependencies
-pip install bedrock-agentcore-starter-toolkit boto3 strands
+pip install boto3 strands bedrock-agentcore
 
 # Configure AWS credentials (already set via OIDC for GitHub Actions)
 aws configure
@@ -40,10 +42,13 @@ git push origin main
 
 The GitHub Action will automatically deploy to production, creating Version 1.
 
+**Note**: Save the Runtime ARN from the deployment output - you'll need it for testing.
+
 ### Step 3: Test Production
 
 ```bash
-python scripts/test_endpoint.py demo-prod-endpoint "What do you do?"
+# Get the runtime ARN from the deployment output, then test:
+python scripts/test_endpoint.py <RUNTIME_ARN> demo-prod-endpoint "What do you do?"
 ```
 
 **Expected Output**: "Hello World"
@@ -64,16 +69,23 @@ Edit `agent/agent.py`:
 
 ```python
 from strands import Agent
+from bedrock_agentcore import BedrockAgentCoreApp
+
+app = BedrockAgentCoreApp()
 
 # Phase 2: Joke Agent
 agent = Agent(
     system_prompt="You are a comedian. When asked anything, tell a short, funny joke."
 )
 
-def handler(event, context):
-    user_input = event.get("input", "")
-    response = agent(user_input)
-    return {"response": response}
+@app.entrypoint
+def invoke(payload):
+    user_message = payload.get("prompt", "")
+    result = agent(user_message)
+    return {"result": result.message}
+
+if __name__ == "__main__":
+    app.run()
 ```
 
 ### Step 6: Push and Create PR
@@ -91,16 +103,16 @@ git push origin feature/joke-agent
 The workflow will:
 - Create `demo-pr-{NUMBER}-runtime`
 - Deploy the joke agent
-- Comment the runtime details on the PR
+- Comment the runtime details on the PR (including Runtime ARN for testing)
 
 ### Step 8: Test PR Endpoint (Isolation Proof)
 
 ```bash
-# Test PR endpoint - should tell a joke
-python scripts/test_endpoint.py PR-{NUMBER}-Endpoint "Tell me something"
+# Test PR endpoint - should tell a joke (get ARN from PR comment)
+python scripts/test_endpoint.py <PR_RUNTIME_ARN> PR-{NUMBER}-Endpoint "Tell me something"
 
 # Test PROD endpoint - should still say Hello World
-python scripts/test_endpoint.py demo-prod-endpoint "Tell me something"
+python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Tell me something"
 ```
 
 **Key Observation**: Both endpoints work independently. Production is unaffected!
@@ -114,7 +126,7 @@ Merge the PR on GitHub. The workflows will:
 ### Step 10: Verify Production Update
 
 ```bash
-python scripts/test_endpoint.py demo-prod-endpoint "Tell me something"
+python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Tell me something"
 ```
 
 **Expected Output**: A joke (Version 2 is now live)
@@ -133,17 +145,25 @@ Edit `agent/agent.py`:
 
 ```python
 from strands import Agent
+from bedrock_agentcore import BedrockAgentCoreApp
+
+app = BedrockAgentCoreApp()
 
 # Phase 3: Broken Agent
 agent = Agent(
     system_prompt="ERROR ERROR ERROR SYSTEM MALFUNCTION"
 )
 
-def handler(event, context):
-    user_input = event.get("input", "")
+@app.entrypoint
+def invoke(payload):
+    user_message = payload.get("prompt", "")
     # Intentionally broken
     raise Exception("Critical system failure!")
-    return {"response": response}
+    result = agent(user_message)
+    return {"result": result.message}
+
+if __name__ == "__main__":
+    app.run()
 ```
 
 ### Step 12: Fast-Forward Merge (Simulate Bad Deploy)
@@ -159,7 +179,7 @@ git push origin feature/broken
 ### Step 13: Verify Production is Broken
 
 ```bash
-python scripts/test_endpoint.py demo-prod-endpoint "Hello"
+python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Hello"
 ```
 
 **Expected Output**: Error or broken response (Version 3 is broken)
@@ -167,13 +187,13 @@ python scripts/test_endpoint.py demo-prod-endpoint "Hello"
 ### Step 14: Instant Rollback to Version 2
 
 ```bash
-./scripts/rollback.sh demo-prod-endpoint 2
+./scripts/rollback.sh <PROD_RUNTIME_ID> demo-prod-endpoint 2
 ```
 
 ### Step 15: Verify Rollback Success
 
 ```bash
-python scripts/test_endpoint.py demo-prod-endpoint "Tell me something"
+python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Tell me something"
 ```
 
 **Expected Output**: A joke (back to Version 2, instantly!)

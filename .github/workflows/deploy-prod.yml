@@ -26,8 +26,8 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install bedrock-agentcore-starter-toolkit
-        run: pip install bedrock-agentcore-starter-toolkit boto3
+      - name: Install dependencies
+        run: pip install boto3
       
       - name: Deploy to Production Runtime
         run: |

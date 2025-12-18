@@ -24,8 +24,16 @@ jobs:
           
           echo "🗑️  Deleting runtime: $RUNTIME_NAME"
           
-          aws bedrock-agent delete-agent-runtime \
-            --runtime-name "$RUNTIME_NAME" \
-            --region us-east-1 || echo "Runtime may not exist or already deleted"
+          # Get runtime ID from name
+          RUNTIME_ID=$(aws bedrock-agentcore-control list-agent-runtimes --region us-east-1 --query "agentRuntimes[?agentRuntimeName=='$RUNTIME_NAME'].agentRuntimeId" --output text)
+          
+          if [ -n "$RUNTIME_ID" ]; then
+            echo "Found runtime ID: $RUNTIME_ID"
+            aws bedrock-agentcore-control delete-agent-runtime \
+              --agent-runtime-id "$RUNTIME_ID" \
+              --region us-east-1 || echo "Failed to delete runtime"
+          else
+            echo "Runtime not found or already deleted"
+          fi
           
           echo "✅ Cleanup complete"
