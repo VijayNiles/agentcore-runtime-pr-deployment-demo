@@ -1,0 +1,34 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
+          aws-region: us-east-1
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install bedrock-agentcore-toolkit
+        run: pip install bedrock-agentcore-toolkit boto3
+      
+      - name: Deploy to Production Runtime
+        run: |
+          python deploy.py "demo-prod-runtime" "demo-prod-endpoint" --prod

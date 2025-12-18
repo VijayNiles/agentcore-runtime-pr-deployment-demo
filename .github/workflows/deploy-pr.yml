@@ -1,0 +1,55 @@
+name: Deploy PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
+          aws-region: us-east-1
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install bedrock-agentcore-toolkit
+        run: pip install bedrock-agentcore-toolkit boto3
+      
+      - name: Deploy PR Runtime
+        id: deploy
+        run: |
+          RUNTIME_NAME="demo-pr-${{ github.event.pull_request.number }}-runtime"
+          ENDPOINT_NAME="PR-${{ github.event.pull_request.number }}-Endpoint"
+          
+          python deploy.py "$RUNTIME_NAME" "$ENDPOINT_NAME"
+          
+          echo "runtime_name=$RUNTIME_NAME" >> $GITHUB_OUTPUT
+          echo "endpoint_name=$ENDPOINT_NAME" >> $GITHUB_OUTPUT
+      
+      - name: Comment PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 **PR Preview Deployed!**\n\n` +
+                    `**Runtime:** \`${{ steps.deploy.outputs.runtime_name }}\`\n` +
+                    `**Endpoint:** \`${{ steps.deploy.outputs.endpoint_name }}\`\n\n` +
+                    `Test with: \`python scripts/test_endpoint.py ${{ steps.deploy.outputs.endpoint_name }}\``
+            })

@@ -1,0 +1,31 @@
+name: Cleanup PR Runtime
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
+          aws-region: us-east-1
+      
+      - name: Delete PR Runtime
+        run: |
+          RUNTIME_NAME="demo-pr-${{ github.event.pull_request.number }}-runtime"
+          
+          echo "🗑️  Deleting runtime: $RUNTIME_NAME"
+          
+          aws bedrock-agent delete-agent-runtime \
+            --runtime-name "$RUNTIME_NAME" \
+            --region us-east-1 || echo "Runtime may not exist or already deleted"
+          
+          echo "✅ Cleanup complete"
