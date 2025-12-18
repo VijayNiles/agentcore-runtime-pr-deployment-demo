@@ -10,14 +10,14 @@ This demo showcases how to implement PR-based deployment workflows for agents on
 
 - **Shared PROD Runtime**: `demo-prod-runtime` with versioned deployments
 - **Ephemeral PR Runtimes**: `demo-pr-{NUMBER}-runtime` created per PR
-- **Direct Code Deployment**: Using AWS bedrock-agentcore-toolkit
+- **Direct Code Deployment**: Using AWS bedrock-agentcore-starter-toolkit
 - **S3 Bucket**: `agentcore-runtime-pr-deployment-demo`
 
 ## Prerequisites
 
 ```bash
 # Install dependencies
-pip install bedrock-agentcore-toolkit boto3 strands
+pip install bedrock-agentcore-starter-toolkit boto3 strands
 
 # Configure AWS credentials (already set via OIDC for GitHub Actions)
 aws configure
