@@ -54,14 +54,13 @@ def create_deployment_package():
 def upload_to_s3(zip_path, runtime_name):
     """Upload zip to S3."""
     s3 = boto3.client('s3', region_name=REGION)
-    # Use simpler path structure - just runtime name and filename
-    # Some AWS services expect files directly under prefix without subdirectories
-    object_key = f"{runtime_name}/agent.zip"
+    # Try simplest possible approach: file at root with just name
+    object_key = "agent.zip"
     
     s3.upload_file(zip_path, S3_BUCKET, object_key)
     print(f"☁️  Uploaded to: s3://{S3_BUCKET}/{object_key}")
     
-    # Return bucket and the FULL key path (prefix = full object key for AgentCore)
+    # Return bucket and prefix
     return S3_BUCKET, object_key
 
 def verify_iam_role():
