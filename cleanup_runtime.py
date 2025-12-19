@@ -221,7 +221,7 @@ if __name__ == "__main__":
         print(f"Runtime {runtime_id} has been deleted")
         print(f"All associated endpoints have been removed")
         print(f"\nℹ️  S3 files preserved for audit purposes:")
-        print(f"   s3://agentcore-runtime-pr-deployment-demo/{runtime_id.split('-')[0]}/"))
+        print(f"   s3://agentcore-runtime-pr-deployment-demo/{runtime_id.split('-')[0]}/")
         
     except Exception as e:
         print("\n" + "=" * 60)
