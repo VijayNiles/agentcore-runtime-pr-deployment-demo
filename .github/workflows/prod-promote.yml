@@ -45,25 +45,7 @@ jobs:
       - name: Get prod runtime ID
         id: get_runtime
         run: |
-          RUNTIME_ID=$(python3 -c "
-import boto3
-import sys
-
-client = boto3.client('bedrock-agentcore-control', region_name='us-west-2')
-
-try:
-    paginator = client.get_paginator('list_agent_runtimes')
-    for page in paginator.paginate():
-        for runtime in page.get('agentRuntimeSummaries', []):
-            if runtime['agentRuntimeName'] == 'prod':
-                print(runtime['agentRuntimeId'])
-                sys.exit(0)
-    print('ERROR: prod runtime not found', file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f'ERROR: {e}', file=sys.stderr)
-    sys.exit(1)
-")
+          RUNTIME_ID=$(python3 -c 'import boto3, sys; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); paginator = client.get_paginator("list_agent_runtimes"); result = [r["agentRuntimeId"] for page in paginator.paginate() for r in page.get("agentRuntimeSummaries", []) if r["agentRuntimeName"] == "prod"]; sys.exit(0) if result and print(result[0]) else sys.exit(1)' 2>&1)
           
           if [ $? -ne 0 ]; then
             echo "Failed to find prod runtime"
@@ -157,24 +139,7 @@ except Exception as e:
           echo "Looking up PR runtime: ${PR_RUNTIME_NAME}..."
           
           # Find PR runtime ID
-          PR_RUNTIME_ID=$(python3 -c "
-import boto3
-import sys
-
-client = boto3.client('bedrock-agentcore-control', region_name='us-west-2')
-
-try:
-    paginator = client.get_paginator('list_agent_runtimes')
-    for page in paginator.paginate():
-        for runtime in page.get('agentRuntimeSummaries', []):
-            if runtime['agentRuntimeName'] == '${PR_RUNTIME_NAME}':
-                print(runtime['agentRuntimeId'])
-                sys.exit(0)
-    print('')
-except Exception as e:
-    print('', file=sys.stderr)
-    sys.exit(0)
-" 2>&1)
+          PR_RUNTIME_ID=$(python3 -c "import boto3; client = boto3.client('bedrock-agentcore-control', region_name='us-west-2'); paginator = client.get_paginator('list_agent_runtimes'); result = [r['agentRuntimeId'] for page in paginator.paginate() for r in page.get('agentRuntimeSummaries', []) if r['agentRuntimeName'] == '${PR_RUNTIME_NAME}']; print(result[0] if result else '')" 2>&1)
           
           if [ -z "$PR_RUNTIME_ID" ]; then
             echo "⚠️ PR runtime ${PR_RUNTIME_NAME} not found (may already be deleted)"

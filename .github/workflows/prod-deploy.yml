@@ -86,26 +86,8 @@ jobs:
       - name: Check if prod runtime exists
         id: check_prod
         run: |
-          # Try to find existing prod runtime
-          RUNTIME_ID=$(python3 -c "
-import boto3
-import sys
-
-client = boto3.client('bedrock-agentcore-control', region_name='us-west-2')
-
-try:
-    paginator = client.get_paginator('list_agent_runtimes')
-    for page in paginator.paginate():
-        for runtime in page.get('agentRuntimeSummaries', []):
-            if runtime['agentRuntimeName'] == 'prod':
-                print(runtime['agentRuntimeId'])
-                sys.exit(0)
-    print('')
-except Exception as e:
-    print('', file=sys.stderr)
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>&1)
+          # Try to find existing prod runtime using update script's lookup function
+          RUNTIME_ID=$(python3 -c 'import boto3; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); paginator = client.get_paginator("list_agent_runtimes"); result = [r["agentRuntimeId"] for page in paginator.paginate() for r in page.get("agentRuntimeSummaries", []) if r["agentRuntimeName"] == "prod"]; print(result[0] if result else "")' 2>&1)
           
           if [ -n "$RUNTIME_ID" ] && [ "$RUNTIME_ID" != "" ]; then
             echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
