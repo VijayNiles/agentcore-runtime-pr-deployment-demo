@@ -189,7 +189,9 @@ response = client.invoke_agent_runtime(
 
 This provides developers with **immediate, copy-paste-ready commands** to test their PR runtime without searching through logs or the AWS console.
 
-### Our Workflow Strategy
+---
+
+## Our Workflow Strategy
 
 Given these generous limits, here's how we architect the system:
 
