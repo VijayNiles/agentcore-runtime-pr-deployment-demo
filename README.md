@@ -221,7 +221,7 @@ Given these generous limits, here's how we architect the system:
 
 ```mermaid
 graph TB
-    subgraph "1. PR Development"
+    subgraph PR_Flow ["1. PR Development"]
         A[Developer Creates PR] --> B[pr-deploy.yml Triggered]
         B --> C{Runtime Exists?}
         C -->|No| D[Create Runtime: pr_123 v1]
@@ -232,7 +232,7 @@ graph TB
         G --> B
     end
     
-    subgraph "2. Production Deployment"
+    subgraph Prod_Deploy ["2. Production Deployment"]
         H[PR Merged to Main] --> I[prod-deploy.yml Triggered]
         I --> J{Prod Runtime Exists?}
         J -->|No| K[Create Runtime: prod v1]
@@ -242,7 +242,7 @@ graph TB
         M --> N[Issue Labels: deployment, production, needs-promotion]
     end
     
-    subgraph "3. Production Promotion IssueOps"
+    subgraph Prod_Promote ["3. Production Promotion IssueOps"]
         O[Reviewer Adds approved Label] --> P[prod-promote.yml Triggered]
         P --> Q{prod Endpoint Exists?}
         Q -->|No| R[Create prod Endpoint to Version N]
@@ -252,24 +252,24 @@ graph TB
         T --> U[Close Issue, Add promoted Label]
     end
     
-    subgraph "AWS Resources"
+    subgraph AWS ["AWS Resources"]
         W1[S3: code.zip Storage]
         W2[(AgentCore Runtimes)]
         W3[AgentCore Endpoints]
     end
     
     N --> O
-    D -.Uploads.-> W1
-    E -.Uploads.-> W1
-    K -.Uploads.-> W1
-    L -.Uploads.-> W1
-    D -.Creates.-> W2
-    E -.Updates.-> W2
-    K -.Creates.-> W2
-    L -.Updates.-> W2
-    R -.Creates.-> W3
-    S -.Updates.-> W3
-    T -.Deletes.-> W2
+    D -. Uploads .-> W1
+    E -. Uploads .-> W1
+    K -. Uploads .-> W1
+    L -. Uploads .-> W1
+    D -. Creates .-> W2
+    E -. Updates .-> W2
+    K -. Creates .-> W2
+    L -. Updates .-> W2
+    R -. Creates .-> W3
+    S -. Updates .-> W3
+    T -. Deletes .-> W2
     
     style A fill:#e1f5ff
     style H fill:#e1f5ff
