@@ -11,8 +11,8 @@ on:
         description: 'Version number to promote to production'
         required: true
         type: string
-      pr_number:
-        description: 'PR number to cleanup (optional - leave empty if no PR)'
+      pr_runtime_id:
+        description: 'PR runtime ID to cleanup (optional - leave empty to skip cleanup). Get this from the production deployment issue.'
         required: false
         type: string
 
@@ -128,30 +128,17 @@ jobs:
           fi
       
       - name: Cleanup PR runtime
-        if: github.event.inputs.pr_number != ''
+        if: github.event.inputs.pr_runtime_id != ''
         id: cleanup
         run: |
-          PR_NUMBER="${{ github.event.inputs.pr_number }}"
-          PR_RUNTIME_NAME="pr_${PR_NUMBER}"
+          PR_RUNTIME_ID="${{ github.event.inputs.pr_runtime_id }}"
+          echo "Cleaning up PR runtime: ${PR_RUNTIME_ID}"
           
-          echo "Looking up PR runtime: ${PR_RUNTIME_NAME}..."
+          # Run cleanup script with auto-confirmation
+          echo "DELETE" | python3 cleanup_runtime.py "${PR_RUNTIME_ID}"
           
-          # Find PR runtime ID using sys.argv to avoid quote escaping issues
-          PR_RUNTIME_ID=$(python3 -c "import boto3, sys; name = sys.argv[1]; client = boto3.client('bedrock-agentcore-control', region_name='us-west-2'); paginator = client.get_paginator('list_agent_runtimes'); result = [r['agentRuntimeId'] for page in paginator.paginate() for r in page.get('agentRuntimeSummaries', []) if r['agentRuntimeName'] == name]; print(result[0] if result else '')" "${PR_RUNTIME_NAME}" 2>&1)
-          
-          if [ -z "$PR_RUNTIME_ID" ]; then
-            echo "⚠️ PR runtime ${PR_RUNTIME_NAME} not found (may already be deleted)"
-            echo "cleaned_up=false" >> $GITHUB_OUTPUT
-          else
-            echo "Found PR runtime: ${PR_RUNTIME_ID}"
-            echo "Running cleanup script..."
-            
-            # Run cleanup script with auto-confirmation
-            echo "DELETE" | python3 cleanup_runtime.py "${PR_RUNTIME_ID}"
-            
-            echo "cleaned_up=true" >> $GITHUB_OUTPUT
-            echo "✅ Cleaned up PR runtime ${PR_RUNTIME_NAME}"
-          fi
+          echo "cleaned_up=true" >> $GITHUB_OUTPUT
+          echo "✅ Cleaned up PR runtime: ${PR_RUNTIME_ID}"
       
       - name: Get final state
         id: final_state

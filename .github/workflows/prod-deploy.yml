@@ -67,6 +67,45 @@ jobs:
             echo "No PR number found - direct push to main"
           fi
       
+      - name: Get PR runtime ID
+        if: steps.pr_info.outputs.pr_number != ''
+        id: get_pr_runtime
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt('${{ steps.pr_info.outputs.pr_number }}');
+            
+            try {
+              // Get all comments on the PR
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber
+              });
+              
+              // Find the deployment comment with runtime ID
+              const deployComment = comments.data.find(comment => 
+                comment.body.includes('Runtime Deployed') || comment.body.includes('Runtime Updated')
+              );
+              
+              if (deployComment) {
+                // Extract runtime ID from comment using regex
+                const match = deployComment.body.match(/\*\*Runtime ID\*\*: `([^`]+)`/);
+                if (match) {
+                  const runtimeId = match[1];
+                  console.log(`Found PR runtime ID: ${runtimeId}`);
+                  core.setOutput('pr_runtime_id', runtimeId);
+                  return;
+                }
+              }
+              
+              console.log('Could not find runtime ID in PR comments');
+              core.setOutput('pr_runtime_id', '');
+            } catch (error) {
+              console.log(`Error fetching PR comments: ${error.message}`);
+              core.setOutput('pr_runtime_id', '');
+            }
+      
       - name: Determine prompt file
         id: detect_prompt
         run: |
@@ -220,13 +259,12 @@ jobs:
             2. **Verify functionality** meets requirements
             3. **Promote to production** by running the [Production Promotion workflow](../actions/workflows/prod-promote.yml)
                - Click "Run workflow"
-               - Enter **runtime_id**: \`${runtimeId}\`
-               - Enter **version**: \`${version}\`
-               ${prNumber ? `- Enter **pr_number**: \`${prNumber}\` (for cleanup)` : ''}
+               - Enter **prod_runtime_version**: \`${version}\`
+               ${prNumber ? `- Enter **pr_runtime_id**: \`${{ steps.get_pr_runtime.outputs.pr_runtime_id }}\` (for automatic cleanup)` : ''}
             
             **CLI Command:**
             \`\`\`bash
-            gh workflow run prod-promote.yml -f runtime_id=${runtimeId} -f version=${version}${prNumber ? ` -f pr_number=${prNumber}` : ''}
+            gh workflow run prod-promote.yml -f prod_runtime_version=${version}${prNumber && '${{ steps.get_pr_runtime.outputs.pr_runtime_id }}' ? ` -f pr_runtime_id=${{ steps.get_pr_runtime.outputs.pr_runtime_id }}` : ''}
             \`\`\`
             
             ### 🔗 Useful Links
