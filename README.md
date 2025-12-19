@@ -35,16 +35,20 @@ Whether you're building your first agent or scaling to dozens, this pattern help
 
 Before diving into the workflow, it's crucial to understand the AWS Bedrock AgentCore service design and how our architecture aligns with it.
 
-### The Service Limits
+### AgentCore Runtime Resource Allocation Limits
+
+The following table describes the resource allocation limits for AgentCore Runtime:
 
 | Resource | Default Limit | Adjustable | Notes |
 |----------|---------------|------------|-------|
-| **Total runtimes per account** | 1,000 | Yes | Can be increased via support ticket |
-| **Versions per runtime** | 1,000 | Yes | Inactive versions auto-deleted after 45 days |
-| **Endpoints (aliases) per runtime** | 10 | Yes | Can be increased via support ticket |
-| **Active session workloads** | 1,000 (US-East/West)<br>500 (other regions) | Yes | The real scaling constraint |
-| **Direct code package size (compressed)** | 250 MB | No | ZIP file size limit |
-| **Docker image size** | 1 GB | No | For container-based deployments |
+| **Active session workloads per account** | 1,000 in US East (N. Virginia) and US West (Oregon), and 500 in other AWS Regions | Yes | Can be increased via support ticket |
+| **Total agents per account** | 1,000 | Yes | Can be increased via support ticket |
+| **Versions per agent** | 1,000 | Yes | Inactive versions deleted after 45 days |
+| **Endpoints (aliases) per agent** | 10 | Yes | Can be increased via support ticket |
+| **Maximum size for a Docker image in an AgentCore Runtime** | 1 GB | No |   |
+| **Maximum size for a direct code deployment package (compressed)** | 250 MB | No | ZIP file size limit for direct code deployment |
+| **Maximum size for a direct code deployment package (uncompressed)** | 750 MB | No | Unzipped package size limit for direct code deployment |
+| **Maximum hardware allocation per session** | 2vCPU/8GB | No | The maximum memory/CPU usage and allocation per Runtime session |
 
 *Source: [AWS Bedrock AgentCore Runtime Quota Limit Documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html)*
 
@@ -52,10 +56,11 @@ Before diving into the workflow, it's crucial to understand the AWS Bedrock Agen
 
 AWS designed AgentCore Runtime with **scale and iteration velocity** in mind:
 
-1. **1,000 runtimes = room to grow** - You can create hundreds of runtimes without hitting quotas
-2. **1,000 versions per runtime** - Encourages rapid iteration; inactive versions cleaned up after 45 days
+1. **1,000 agents = room to grow** - You can create hundreds of agent runtimes without hitting quotas
+2. **1,000 versions per agent** - Encourages rapid iteration; inactive versions cleaned up after 45 days
 3. **Serverless economics** - Pay-per-use model makes ephemeral runtimes cost-effective
 4. **Immutable versions** - Each code update creates a permanent, rollback-able snapshot
+5. **Active session workloads** - The primary scaling factor is concurrent active sessions (1,000 in US East/West, 500 in other regions), not the number of agent runtimes
 
 This is fundamentally different from traditional infrastructure. You're not managing "servers" - you're managing **logical agents** with **immutable version snapshots** and **traffic-routing endpoints**.
 
@@ -156,14 +161,6 @@ With 1,000 version slots and **auto-deletion after 45 days**:
 - Merge 20 PRs per day for a month (600 versions) without manual cleanup
 - Keep production history for rollbacks within the 45-day window
 - AWS handles garbage collection automatically
-
-### The Real Constraint: Active Sessions
-
-While you can create **1,000 agent runtimes**, the actual bottleneck is **active session workloads**:
-- **1,000 concurrent sessions** in US-East/West regions
-- **500 concurrent sessions** in other regions
-
-Your limit isn't "how many PRs can I test" - it's "how many runtimes are actively processing requests right now." For most teams, this is more than sufficient.
 
 ### Automated PR Comments with Runtime Details
 
@@ -697,6 +694,7 @@ When you merge to main, the production runtime gets a new version, but the **`pr
 **Zero-Downtime Rollback:** Point the `prod` endpoint back to any previous version instantly without rebuilding artifacts.
 
 #### Approval Workflow
+
 ```mermaid
 graph LR
     A[Merge to Main] --> B[New Version Created]
@@ -705,7 +703,7 @@ graph LR
     D -->|No| E[Fix Issues, Merge New PR]
     D -->|Yes| F[Add approved Label]
     F --> G[UpdateAgentRuntimeEndpoint]
-    G --> H[prod Endpoint → New Version]
+    G --> H[prod Endpoint to New Version]
     H --> I[Cleanup PR Runtime]
     I --> J[Issue Closed]
     
