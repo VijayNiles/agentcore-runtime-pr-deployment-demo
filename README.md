@@ -33,48 +33,99 @@ Whether you're building your first agent or scaling to dozens, this pattern help
 
 ## Understanding AgentCore Runtime Quotas
 
-Before diving into the workflow, it's crucial to understand **why** we designed it this way. AWS Bedrock AgentCore has specific quota limits that shape how we architect deployments.
+Before diving into the workflow, it's crucial to understand the AWS Bedrock AgentCore service design and how our architecture aligns with it.
 
 ### The Service Limits
 
-| Resource | Soft Quota | Hard Limit |
-|----------|------------|------------|
-| **Agent Runtimes** | 10 per account/region | Adjustable via support |
-| **Versions per Runtime** | 100 | Adjustable via support |
-| **Endpoints per Runtime** | 10 | Adjustable via support |
+| Resource | Default Limit | Adjustable | Notes |
+|----------|---------------|------------|-------|
+| **Total agents per account** | 1,000 | Yes | Can be increased via support ticket |
+| **Versions per agent** | 1,000 | Yes | Inactive versions auto-deleted after 45 days |
+| **Endpoints (aliases) per agent** | 10 | Yes | Can be increased via support ticket |
+| **Active session workloads** | 1,000 (US-East/West)<br>500 (other regions) | Yes | The real scaling constraint |
+| **Direct code package size (compressed)** | 250 MB | No | ZIP file size limit |
+| **Docker image size** | 1 GB | No | For container-based deployments |
 
-### What This Means for CI/CD
+*Source: [AWS Bedrock AgentCore Documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)*
 
-**Naive approach (❌ Don't do this):**
+### Understanding the Service Design Philosophy
+
+AWS designed AgentCore Runtime with **scale and iteration velocity** in mind:
+
+1. **1,000 agents = room to grow** - You can create hundreds of agent runtimes without hitting quotas
+2. **1,000 versions with auto-cleanup** - Encourages rapid iteration; inactive versions cleaned up after 45 days
+3. **Serverless economics** - Pay-per-use model makes ephemeral runtimes cost-effective
+4. **Immutable versions** - Each code update creates a permanent, rollback-able snapshot
+
+This is fundamentally different from traditional infrastructure. You're not managing "servers" - you're managing **logical agents** with **immutable version snapshots** and **traffic-routing endpoints**.
+
+### Mapping DevOps Concepts to AgentCore
+
+| Traditional DevOps Term | AgentCore Equivalent | Purpose |
+|------------------------|----------------------|---------|
+| **Artifact/Build** | **Agent Version** | Immutable snapshot of your agent's code |
+| **Environment URL** | **Endpoint** | Addressable entry point (ARN) pointing to a Version |
+| **Alias/Tag** | **Endpoint** | Stable pointer (e.g., "PROD", "DEV") to underlying Version |
+| **Server/Host** | **Agent Runtime** | Logical container managing compute, memory, and isolation |
+
+### Why the PR-per-Runtime Pattern Works
+
+Our workflow creates **one ephemeral runtime per PR**. This isn't due to quota constraints - it's because this pattern perfectly aligns with AgentCore's design:
+
+#### ✅ **Benefit 1: Session Isolation**
+AgentCore sessions are **stateful**. Each runtime maintains its own memory and conversation history. Creating a temporary runtime for PR #123 ensures:
+- Sarah's testing sessions don't interfere with Bob's PR #124
+- Conversation state from broken code doesn't corrupt shared environments
+- Parallel testing across dozens of PRs without cross-contamination
+
+#### ✅ **Benefit 2: Immutability Alignment**
+Every code change (PR merge) creates an **immutable Version**:
 ```
-PR #1 → Create runtime → Test → Delete runtime
-PR #2 → Create runtime → Test → Delete runtime
-PR #3 → Create runtime → Test → Delete runtime
-...
+PR #42 merged → prod runtime v5 created (permanent snapshot)
+PR #43 merged → prod runtime v6 created (permanent snapshot)
 ```
+If v6 has a bug, you instantly rollback by updating the PROD endpoint to point to v5. No redeployment, no rebuild - just pointer updates.
 
-**Problem:** If you have 15 concurrent PRs, you exceed your 10-runtime quota. PRs fail, developers are blocked, and your velocity grinds to a halt.
+#### ✅ **Benefit 3: Cost Efficiency**
+AgentCore is **serverless/pay-per-use**:
+- Ephemeral PR runtime idle for 2 days? Costs nearly nothing.
+- Compare to provisioning dedicated EC2 instances or RDS databases per PR ($$$$)
+- Delete runtime after merge → zero ongoing cost
 
-### AWS's Intended Usage Pattern
+#### ✅ **Benefit 4: Version Auto-Cleanup**
+With 1,000 version slots and **auto-deletion after 45 days**, you can:
+- Merge 20 PRs per day for a month (600 versions) without manual cleanup
+- Keep production history for rollbacks within the 45-day window
+- Let AWS handle garbage collection of old versions
 
-The AgentCore team designed the service with this mental model:
+### The Real Constraint: Active Sessions
 
-1. **Runtimes are long-lived** - Think of them as "applications" or "microservices"
-2. **Versions enable iteration** - Each code change creates a new version (up to 100)
-3. **Endpoints control traffic** - Point production traffic at stable versions
+While you can create **1,000 agent runtimes**, the actual bottleneck is **active session workloads**:
+- **1,000 concurrent sessions** in US-East/West regions
+- **500 concurrent sessions** in other regions
 
-This is similar to how AWS Lambda aliases work: one function (runtime), many versions, aliases (endpoints) for routing.
+This means your limit isn't "how many PRs can I test" - it's "how many agents are actively processing requests right now." For most teams, this is more than sufficient.
 
-### Our Solution
+### Our Workflow Strategy
 
-We embrace this model by:
+Given these generous limits, here's how we architect the system:
 
-- **PR Runtimes**: One runtime per PR (e.g., `pr_123`), updated with each push
-- **Production Runtime**: Single `prod` runtime, accumulating versions over time
-- **Automatic cleanup**: PR runtimes deleted after promotion to prod
-- **Version-based rollback**: Keep production version history for instant rollbacks
+- **PR Runtimes**: One ephemeral runtime per PR (e.g., `pr_123`)
+  - Created on PR open
+  - Updated (new versions) with each push
+  - Deleted after merge and promotion
+  - With 1,000 agent limit, you can support **hundreds of concurrent PRs**
 
-This means with the default 10-runtime quota, you can safely support **9 concurrent PRs** (plus 1 prod runtime).
+- **Production Runtime**: Single long-lived `prod` runtime
+  - Accumulates versions over time (v1, v2, v3... up to v1000)
+  - Version history enables instant rollbacks
+  - Inactive versions auto-cleanup after 45 days
+  - PROD endpoint points to current stable version
+
+- **Cost Optimization**: Automatic cleanup after promotion
+  - PR runtime deleted when no longer needed
+  - S3 files preserved for audit trail
+  - Zero ongoing cost for merged PRs
 
 ---
 
@@ -262,16 +313,18 @@ PR #123 → Runtime: pr_123
 
 ### Production Runtime Version Strategy
 
-The production runtime uses a **single, long-lived runtime** that accumulates versions over time.
+The production runtime uses a **single, long-lived agent runtime** that accumulates versions over time.
 
 #### Version Lifecycle
 ```
-PR #1 merged  → prod runtime v1 created
-PR #2 merged  → prod runtime v2 created
-PR #3 merged  → prod runtime v3 created
+PR #1 merged  → prod runtime v1 created (immutable)
+PR #2 merged  → prod runtime v2 created (immutable)
+PR #3 merged  → prod runtime v3 created (immutable)
 ...
-PR #99 merged → prod runtime v99 created
+PR #100 merged → prod runtime v100 created (immutable)
 ```
+
+After 45 days, inactive versions are automatically cleaned up by AWS, freeing space for new versions while keeping the runtime's version history manageable.
 
 #### Endpoint Management
 ```
@@ -282,18 +335,19 @@ After first promotion:
   prod endpoint → v1
 
 After second promotion:
-  prod endpoint → v2 (v1 still exists!)
+  prod endpoint → v2 (v1 still exists for 45 days!)
 
 After rollback:
   prod endpoint → v1 (instant, no redeployment needed)
 ```
 
 **Why This Design?**
-- ✅ **Instant rollback** - Just update endpoint pointer, no redeployment
-- ✅ **Version history** - Can trace every change made to production
+- ✅ **Instant rollback** - Update endpoint pointer, no code rebuild or redeployment
+- ✅ **Version history** - 1,000 version slots with auto-cleanup after 45 days
+- ✅ **Immutable artifacts** - Each version is a permanent snapshot you can always return to
 - ✅ **A/B testing** - Create multiple endpoints pointing to different versions
 - ✅ **Staged rollouts** - Gradually migrate endpoints from v1 → v2
-- ✅ **Quota efficiency** - One runtime, 100 versions vs. 100 separate runtimes
+- ✅ **Efficient scaling** - One runtime with many versions vs. managing separate runtimes
 
 ### Gated Promotion Process
 
