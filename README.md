@@ -166,26 +166,6 @@ With 1,000 version slots and **auto-deletion after 45 days**:
 
 When the GitHub Actions workflow calls `CreateAgentRuntime`, the API response returns complete runtime information including `agentRuntimeArn`, `agentRuntimeId`, `agentRuntimeName`, and endpoint details. The workflow captures these values and posts them as a comment on the pull request using the GitHub API.
 
-**Example PR Comment:**
-```
-🤖 **AgentCore Runtime Deployed**
-
-**Runtime ARN:** `arn:aws:bedrock-agentcore:us-west-2:123456:runtime/pr_42-AbCd1234`
-**Runtime ID:** `pr_42-AbCd1234`
-**Version:** 1
-**Endpoint:** DEFAULT (auto-created)
-
-**Test your agent:**
-```python
-import boto3
-client = boto3.client('bedrock-agentcore')
-response = client.invoke_agent_runtime(
-    agentRuntimeId='pr_42-AbCd1234',
-    endpointId='DEFAULT',
-    inputText='Your test prompt'
-)
-```
-```
 
 This provides developers with **immediate, copy-paste-ready commands** to test their PR runtime without searching through logs or the AWS console.
 
