@@ -136,8 +136,8 @@ jobs:
           
           echo "Looking up PR runtime: ${PR_RUNTIME_NAME}..."
           
-          # Find PR runtime ID
-          PR_RUNTIME_ID=$(python3 -c "import boto3; client = boto3.client('bedrock-agentcore-control', region_name='us-west-2'); paginator = client.get_paginator('list_agent_runtimes'); result = [r['agentRuntimeId'] for page in paginator.paginate() for r in page.get('agentRuntimeSummaries', []) if r['agentRuntimeName'] == '${PR_RUNTIME_NAME}']; print(result[0] if result else '')" 2>&1)
+          # Find PR runtime ID - use double quotes so bash expands the variable
+          PR_RUNTIME_ID=$(python3 -c "import boto3; client = boto3.client('bedrock-agentcore-control', region_name='us-west-2'); paginator = client.get_paginator('list_agent_runtimes'); result = [r['agentRuntimeId'] for page in paginator.paginate() for r in page.get('agentRuntimeSummaries', []) if r['agentRuntimeName'] == \"${PR_RUNTIME_NAME}\"]; print(result[0] if result else '')" 2>&1)
           
           if [ -z "$PR_RUNTIME_ID" ]; then
             echo "⚠️ PR runtime ${PR_RUNTIME_NAME} not found (may already be deleted)"
