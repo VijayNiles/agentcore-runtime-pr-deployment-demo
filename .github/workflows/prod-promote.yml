@@ -1,0 +1,298 @@
+name: Production Promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number to promote to production'
+        required: true
+        type: string
+      pr_number:
+        description: 'PR number to cleanup (optional - leave empty if no PR)'
+        required: false
+        type: string
+
+permissions:
+  id-token: write  # Required for OIDC authentication
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
+          aws-region: us-west-2
+      
+      - name: Get prod runtime ID
+        id: get_runtime
+        run: |
+          RUNTIME_ID=$(python3 -c "
+import boto3
+import sys
+
+client = boto3.client('bedrock-agentcore-control', region_name='us-west-2')
+
+try:
+    paginator = client.get_paginator('list_agent_runtimes')
+    for page in paginator.paginate():
+        for runtime in page.get('agentRuntimeSummaries', []):
+            if runtime['agentRuntimeName'] == 'prod':
+                print(runtime['agentRuntimeId'])
+                sys.exit(0)
+    print('ERROR: prod runtime not found', file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+")
+          
+          if [ $? -ne 0 ]; then
+            echo "Failed to find prod runtime"
+            exit 1
+          fi
+          
+          echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+          echo "Found prod runtime: ${RUNTIME_ID}"
+      
+      - name: Verify version exists
+        id: verify_version
+        run: |
+          RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
+          VERSION="${{ github.event.inputs.version }}"
+          
+          # Get runtime details
+          RUNTIME_JSON=$(aws bedrock-agentcore-control get-agent-runtime \
+            --agent-runtime-id "${RUNTIME_ID}" \
+            --region us-west-2)
+          
+          CURRENT_VERSION=$(echo "$RUNTIME_JSON" | jq -r '.agentRuntimeVersion')
+          
+          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          
+          # Verify requested version is not greater than current
+          if [ "$VERSION" -gt "$CURRENT_VERSION" ]; then
+            echo "ERROR: Requested version $VERSION does not exist. Current version is $CURRENT_VERSION"
+            exit 1
+          fi
+          
+          echo "✅ Version $VERSION exists and is valid"
+      
+      - name: Check if prod endpoint exists
+        id: check_endpoint
+        run: |
+          RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
+          
+          ENDPOINT_INFO=$(aws bedrock-agentcore-control get-agent-runtime-endpoint \
+            --agent-runtime-id "${RUNTIME_ID}" \
+            --endpoint-name prod \
+            --region us-west-2 2>&1 || echo "NOT_FOUND")
+          
+          if echo "$ENDPOINT_INFO" | grep -q "NOT_FOUND\|ResourceNotFoundException"; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "current_version=none" >> $GITHUB_OUTPUT
+            echo "No prod endpoint exists - will create"
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+            CURRENT_VERSION=$(echo "$ENDPOINT_INFO" | jq -r '.targetVersion')
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "Prod endpoint exists, currently at version ${CURRENT_VERSION}"
+          fi
+      
+      - name: Create prod endpoint
+        if: steps.check_endpoint.outputs.exists == 'false'
+        id: create_endpoint
+        run: |
+          RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
+          VERSION="${{ github.event.inputs.version }}"
+          
+          echo "Creating prod endpoint for version ${VERSION}..."
+          python3 create_endpoint.py "${RUNTIME_ID}" "${VERSION}" prod
+          
+          echo "✅ Created prod endpoint pointing to version ${VERSION}"
+      
+      - name: Update prod endpoint
+        if: steps.check_endpoint.outputs.exists == 'true'
+        id: update_endpoint
+        run: |
+          RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
+          VERSION="${{ github.event.inputs.version }}"
+          CURRENT_VERSION="${{ steps.check_endpoint.outputs.current_version }}"
+          
+          if [ "$VERSION" == "$CURRENT_VERSION" ]; then
+            echo "⚠️ Prod endpoint is already at version ${VERSION}, no update needed"
+            echo "updated=false" >> $GITHUB_OUTPUT
+          else
+            echo "Updating prod endpoint from version ${CURRENT_VERSION} to ${VERSION}..."
+            python3 update_endpoint.py "${RUNTIME_ID}" prod "${VERSION}"
+            echo "updated=true" >> $GITHUB_OUTPUT
+            echo "✅ Updated prod endpoint to version ${VERSION}"
+          fi
+      
+      - name: Cleanup PR runtime
+        if: github.event.inputs.pr_number != ''
+        id: cleanup
+        run: |
+          PR_NUMBER="${{ github.event.inputs.pr_number }}"
+          PR_RUNTIME_NAME="pr_${PR_NUMBER}"
+          
+          echo "Looking up PR runtime: ${PR_RUNTIME_NAME}..."
+          
+          # Find PR runtime ID
+          PR_RUNTIME_ID=$(python3 -c "
+import boto3
+import sys
+
+client = boto3.client('bedrock-agentcore-control', region_name='us-west-2')
+
+try:
+    paginator = client.get_paginator('list_agent_runtimes')
+    for page in paginator.paginate():
+        for runtime in page.get('agentRuntimeSummaries', []):
+            if runtime['agentRuntimeName'] == '${PR_RUNTIME_NAME}':
+                print(runtime['agentRuntimeId'])
+                sys.exit(0)
+    print('')
+except Exception as e:
+    print('', file=sys.stderr)
+    sys.exit(0)
+" 2>&1)
+          
+          if [ -z "$PR_RUNTIME_ID" ]; then
+            echo "⚠️ PR runtime ${PR_RUNTIME_NAME} not found (may already be deleted)"
+            echo "cleaned_up=false" >> $GITHUB_OUTPUT
+          else
+            echo "Found PR runtime: ${PR_RUNTIME_ID}"
+            echo "Running cleanup script..."
+            
+            # Run cleanup script with auto-confirmation
+            echo "DELETE" | python3 cleanup_runtime.py "${PR_RUNTIME_ID}"
+            
+            echo "cleaned_up=true" >> $GITHUB_OUTPUT
+            echo "✅ Cleaned up PR runtime ${PR_RUNTIME_NAME}"
+          fi
+      
+      - name: Get final state
+        id: final_state
+        run: |
+          RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
+          
+          # Get endpoint info
+          ENDPOINT_INFO=$(aws bedrock-agentcore-control get-agent-runtime-endpoint \
+            --agent-runtime-id "${RUNTIME_ID}" \
+            --endpoint-name prod \
+            --region us-west-2)
+          
+          ENDPOINT_ARN=$(echo "$ENDPOINT_INFO" | jq -r '.agentRuntimeEndpointArn')
+          TARGET_VERSION=$(echo "$ENDPOINT_INFO" | jq -r '.targetVersion')
+          LIVE_VERSION=$(echo "$ENDPOINT_INFO" | jq -r '.liveVersion')
+          STATUS=$(echo "$ENDPOINT_INFO" | jq -r '.status')
+          
+          echo "endpoint_arn=${ENDPOINT_ARN}" >> $GITHUB_OUTPUT
+          echo "target_version=${TARGET_VERSION}" >> $GITHUB_OUTPUT
+          echo "live_version=${LIVE_VERSION}" >> $GITHUB_OUTPUT
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+      
+      - name: Post promotion summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runtimeId = '${{ steps.get_runtime.outputs.runtime_id }}';
+            const version = '${{ github.event.inputs.version }}';
+            const prNumber = '${{ github.event.inputs.pr_number }}';
+            const endpointArn = '${{ steps.final_state.outputs.endpoint_arn }}';
+            const targetVersion = '${{ steps.final_state.outputs.target_version }}';
+            const liveVersion = '${{ steps.final_state.outputs.live_version }}';
+            const status = '${{ steps.final_state.outputs.status }}';
+            const wasUpdated = '${{ steps.update_endpoint.outputs.updated }}' !== 'false';
+            const wasCleanedUp = '${{ steps.cleanup.outputs.cleaned_up }}' === 'true';
+            const oldVersion = '${{ steps.check_endpoint.outputs.current_version }}';
+            
+            const statusEmoji = status === 'READY' ? '✅' : '⏳';
+            
+            let summary = `## ✅ Production Promotion Complete\n\n`;
+            summary += `Version **${version}** has been promoted to production!\n\n`;
+            summary += `### 📋 Promotion Details\n\n`;
+            summary += `**Runtime ID**: \`${runtimeId}\`\n`;
+            summary += `**Promoted Version**: ${version}\n`;
+            summary += `**Previous Version**: ${oldVersion === 'none' ? 'N/A (first deployment)' : oldVersion}\n`;
+            summary += `**Endpoint Status**: ${statusEmoji} ${status}\n`;
+            summary += `**Target Version**: ${targetVersion}\n`;
+            summary += `**Live Version**: ${liveVersion}\n`;
+            
+            if (prNumber) {
+              summary += `\n### 🧹 Cleanup\n\n`;
+              if (wasCleanedUp) {
+                summary += `✅ PR #${prNumber} runtime (\`pr_${prNumber}\`) has been cleaned up\n`;
+                summary += `- Runtime and endpoints deleted\n`;
+                summary += `- S3 files preserved for audit\n`;
+              } else {
+                summary += `⚠️ PR #${prNumber} runtime not found (may already be deleted)\n`;
+              }
+            }
+            
+            summary += `\n### 🔗 Production Links\n\n`;
+            summary += `- [View Runtime in AWS Console](https://us-west-2.console.aws.amazon.com/bedrock/home?region=us-west-2#/agent-runtimes/${runtimeId})\n`;
+            summary += `- [CloudWatch Logs](https://us-west-2.console.aws.amazon.com/cloudwatch/home?region=us-west-2#logsV2:log-groups)\n`;
+            summary += `- **Endpoint ARN**: \`${endpointArn}\`\n`;
+            
+            summary += `\n### 📊 S3 Location\n`;
+            summary += `\`\`\`\n`;
+            summary += `s3://agentcore-runtime-pr-deployment-demo/prod/v${version}/code.zip\n`;
+            summary += `\`\`\`\n`;
+            
+            // Post as workflow summary
+            await core.summary
+              .addRaw(summary)
+              .write();
+            
+            // Also find and close the deployment issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'needs-promotion',
+              state: 'open'
+            });
+            
+            for (const issue of issues) {
+              if (issue.title.includes(`Version ${version}`)) {
+                // Comment on the issue
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `✅ **Promoted to production**\n\n${summary}`
+                });
+                
+                // Close and relabel the issue
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                  labels: ['deployment', 'production', 'promoted']
+                });
+                
+                break;
+              }
+            }
+            
+            console.log('✅ Production promotion complete!');
