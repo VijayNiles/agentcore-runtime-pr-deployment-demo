@@ -39,9 +39,9 @@ Before diving into the workflow, it's crucial to understand the AWS Bedrock Agen
 
 | Resource | Default Limit | Adjustable | Notes |
 |----------|---------------|------------|-------|
-| **Total agents per account** | 1,000 | Yes | Can be increased via support ticket |
-| **Versions per agent** | 1,000 | Yes | Inactive versions auto-deleted after 45 days |
-| **Endpoints (aliases) per agent** | 10 | Yes | Can be increased via support ticket |
+| **Total runtimes per account** | 1,000 | Yes | Can be increased via support ticket |
+| **Versions per runtime** | 1,000 | Yes | Inactive versions auto-deleted after 45 days |
+| **Endpoints (aliases) per runtime** | 10 | Yes | Can be increased via support ticket |
 | **Active session workloads** | 1,000 (US-East/West)<br>500 (other regions) | Yes | The real scaling constraint |
 | **Direct code package size (compressed)** | 250 MB | No | ZIP file size limit |
 | **Docker image size** | 1 GB | No | For container-based deployments |
@@ -52,8 +52,8 @@ Before diving into the workflow, it's crucial to understand the AWS Bedrock Agen
 
 AWS designed AgentCore Runtime with **scale and iteration velocity** in mind:
 
-1. **1,000 agents = room to grow** - You can create hundreds of agent runtimes without hitting quotas
-2. **1,000 versions with auto-cleanup** - Encourages rapid iteration; inactive versions cleaned up after 45 days
+1. **1,000 runtimes = room to grow** - You can create hundreds of runtimes without hitting quotas
+2. **1,000 versions per runtime** - Encourages rapid iteration; inactive versions cleaned up after 45 days
 3. **Serverless economics** - Pay-per-use model makes ephemeral runtimes cost-effective
 4. **Immutable versions** - Each code update creates a permanent, rollback-able snapshot
 
@@ -68,35 +68,94 @@ This is fundamentally different from traditional infrastructure. You're not mana
 | **Alias/Tag** | **Endpoint** | Stable pointer (e.g., "PROD", "DEV") to underlying Version |
 | **Server/Host** | **Agent Runtime** | Logical container managing compute, memory, and isolation |
 
-### Why the PR-per-Runtime Pattern Works
+### Two-Tier Endpoint Strategy
 
-Our workflow creates **one ephemeral runtime per PR**. This isn't due to quota constraints - it's because this pattern perfectly aligns with AgentCore's design:
+AgentCore Runtime provides two distinct endpoint behaviors that enable both rapid development and controlled production deployments:
 
-#### ✅ **Benefit 1: Session Isolation**
-AgentCore sessions are **stateful**. Each runtime maintains its own memory and conversation history. Creating a temporary runtime for PR #123 ensures:
-- Sarah's testing sessions don't interfere with Bob's PR #124
+#### 🔵 **DEFAULT Endpoint for Development**
+
+When you create an AgentCore Runtime, a **DEFAULT endpoint is automatically created** and points to the initial version (V1). As documented in the [AgentCore Runtime versioning guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agent-runtime-versioning.html):
+
+> **The DEFAULT endpoint automatically updates to reference the latest version** whenever you update the runtime.
+
+This behavior is **ideal for PR workflows** where developers want immediate feedback without manual promotion steps. Push a code change → new version created → DEFAULT endpoint auto-updates → test immediately.
+
+#### 🟢 **Custom Endpoints for Production**
+
+For production control, you create a **custom named endpoint** (e.g., `prod`) that does **NOT** automatically update. As the [AWS documentation states](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agent-runtime-versioning.html):
+
+> **Endpoints must be explicitly updated to point to new versions.**
+
+This ensures production deployments only happen when explicitly approved and triggered through your IssueOps workflow.
+
+### Why Ephemeral Runtimes per PR (Quota-Aware Architecture)
+
+Many teams initially consider a "shared runtime with multiple endpoints" approach, but this quickly hits scaling limits.
+
+#### ❌ **Anti-Pattern: Shared Runtime with Endpoint-per-PR**
+
+```
+Single "dev" runtime
+├─ PR-101-Endpoint → V1
+├─ PR-102-Endpoint → V2
+├─ PR-103-Endpoint → V3
+...
+└─ PR-110-Endpoint → V10  ⚠️ Hit 10 endpoint limit!
+```
+
+**Problem:** The 10 endpoint quota per runtime means you can only support **10 concurrent PRs**. For teams with 20+ developers, this becomes an immediate bottleneck.
+
+#### ✅ **Correct Pattern: Ephemeral Runtime per PR**
+
+```
+PR-101 Runtime → DEFAULT endpoint
+PR-102 Runtime → DEFAULT endpoint
+PR-103 Runtime → DEFAULT endpoint
+...
+PR-1000 Runtime → DEFAULT endpoint  ✅ 1,000 runtime quota!
+```
+
+By creating a **separate runtime for each PR**, you leverage the **1,000 runtime quota** instead of the 10 endpoint quota. Each PR runtime gets its own DEFAULT endpoint, and you can support **up to 1,000 concurrent PRs** before hitting limits.
+
+#### 📊 **Quota Math Comparison**
+
+| Approach | Resource Model | Concurrent PRs Supported | Quota Bottleneck |
+|----------|---------------|-------------------------|------------------|
+| **Shared Runtime** | 1 Runtime + N Endpoints | **10 PRs maximum** | 10 endpoints per runtime |
+| **Ephemeral Runtimes** | N Runtimes + DEFAULT each | **1,000 PRs maximum** | 1,000 runtimes per account |
+
+**Production environment** uses a small number of long-lived runtimes (PROD, STAGING, UAT) with custom endpoints. Since these are stable environments, you're using only 3-5 endpoints per runtime, well within limits.
+
+### Why This Pattern Works
+
+#### ✅ **Session Isolation**
+AgentCore sessions are **stateful** with memory and conversation history. Separate runtimes ensure:
+- Developer A's testing sessions don't interfere with Developer B's
 - Conversation state from broken code doesn't corrupt shared environments
 - Parallel testing across dozens of PRs without cross-contamination
 
-#### ✅ **Benefit 2: Immutability Alignment**
-Every code change (PR merge) creates an **immutable Version**:
+#### ✅ **Automatic Version Management**
+Every `UpdateAgentRuntime` call automatically creates a new immutable version:
 ```
-PR #42 merged → prod runtime v5 created (permanent snapshot)
-PR #43 merged → prod runtime v6 created (permanent snapshot)
+PR #42 merged → prod runtime V5 created (permanent snapshot)
+PR #43 merged → prod runtime V6 created (permanent snapshot)
 ```
-If v6 has a bug, you instantly rollback by updating the PROD endpoint to point to v5. No redeployment, no rebuild - just pointer updates.
 
-#### ✅ **Benefit 3: Cost Efficiency**
-AgentCore is **serverless/pay-per-use**:
+**DEFAULT endpoint** auto-updates to V6 for testing. **PROD endpoint** stays on V5 until explicitly promoted.
+
+If V6 has a bug, you instantly rollback by updating PROD endpoint to point to V5. No redeployment, no rebuild - just pointer updates.
+
+#### ✅ **Cost Efficiency**
+AgentCore uses **serverless/pay-per-use pricing**:
 - Ephemeral PR runtime idle for 2 days? Costs nearly nothing.
-- Compare to provisioning dedicated EC2 instances or RDS databases per PR ($$$$)
 - Delete runtime after merge → zero ongoing cost
+- No accumulation of "zombie" resources
 
-#### ✅ **Benefit 4: Version Auto-Cleanup**
-With 1,000 version slots and **auto-deletion after 45 days**, you can:
+#### ✅ **Version Auto-Cleanup**
+With 1,000 version slots and **auto-deletion after 45 days**:
 - Merge 20 PRs per day for a month (600 versions) without manual cleanup
 - Keep production history for rollbacks within the 45-day window
-- Let AWS handle garbage collection of old versions
+- AWS handles garbage collection automatically
 
 ### The Real Constraint: Active Sessions
 
@@ -104,7 +163,34 @@ While you can create **1,000 agent runtimes**, the actual bottleneck is **active
 - **1,000 concurrent sessions** in US-East/West regions
 - **500 concurrent sessions** in other regions
 
-This means your limit isn't "how many PRs can I test" - it's "how many agents are actively processing requests right now." For most teams, this is more than sufficient.
+Your limit isn't "how many PRs can I test" - it's "how many runtimes are actively processing requests right now." For most teams, this is more than sufficient.
+
+### Automated PR Comments with Runtime Details
+
+When the GitHub Actions workflow calls `CreateAgentRuntime`, the API response returns complete runtime information including `agentRuntimeArn`, `agentRuntimeId`, `agentRuntimeName`, and endpoint details. The workflow captures these values and posts them as a comment on the pull request using the GitHub API.
+
+**Example PR Comment:**
+```
+🤖 **AgentCore Runtime Deployed**
+
+**Runtime ARN:** `arn:aws:bedrock-agentcore:us-west-2:123456:runtime/pr_42-AbCd1234`
+**Runtime ID:** `pr_42-AbCd1234`
+**Version:** 1
+**Endpoint:** DEFAULT (auto-created)
+
+**Test your agent:**
+```python
+import boto3
+client = boto3.client('bedrock-agentcore')
+response = client.invoke_agent_runtime(
+    agentRuntimeId='pr_42-AbCd1234',
+    endpointId='DEFAULT',
+    inputText='Your test prompt'
+)
+```
+```
+
+This provides developers with **immediate, copy-paste-ready commands** to test their PR runtime without searching through logs or the AWS console.
 
 ### Our Workflow Strategy
 
@@ -120,7 +206,8 @@ Given these generous limits, here's how we architect the system:
   - Accumulates versions over time (v1, v2, v3... up to v1000)
   - Version history enables instant rollbacks
   - Inactive versions auto-cleanup after 45 days
-  - PROD endpoint points to current stable version
+  - **DEFAULT endpoint** auto-updates to latest version (for testing)
+  - **`prod` endpoint** (custom) points to approved stable version (for production traffic)
 
 - **Cost Optimization**: Automatic cleanup after promotion
   - PR runtime deleted when no longer needed
@@ -211,7 +298,240 @@ Our workflow is split into three GitHub Actions workflows, each with a specific 
 
 ---
 
-## How It Works
+## How It Works: Workflow Breakdown
+
+### Workflow 1: PR Runtime Deployment
+**File:** `.github/workflows/pr-deploy.yml`
+
+**Purpose:** Provides isolated testing environments for each pull request.
+
+#### Triggers
+- Pull request **opened**
+- Pull request **synchronized** (new commits pushed)
+- Pull request **reopened**
+- Only when changes affect: `agent/**`, `prompts/**`, `deployment_utils.py`, or the workflow file itself
+
+#### What It Does
+
+**On First Run (New PR):**
+1. Checks if PR already has a runtime by searching for `<!-- RUNTIME_ID: -->` in PR comments
+2. If not found, deploys new runtime:
+   - Calls `deploy_runtime_with_deps.py --name pr_{PR_NUMBER}`
+   - Creates runtime with V1
+   - DEFAULT endpoint auto-created pointing to V1
+3. Uploads code package to S3: `s3://bucket/pr_{PR_NUMBER}/v1/code.zip`
+4. Detects if any prompt file changed and includes it
+
+**On Subsequent Runs (PR Updates):**
+1. Finds existing runtime ID from previous PR comment
+2. Updates runtime:
+   - Calls `update_runtime_with_deps.py {RUNTIME_ID}`
+   - Creates new version (V2, V3, etc.)
+   - DEFAULT endpoint **automatically updates** to new version
+3. Uploads new code package to S3: `s3://bucket/pr_{PR_NUMBER}/v{N}/code.zip`
+
+#### Output
+
+Posts/updates a PR comment with:
+- Runtime Name: `pr_{PR_NUMBER}`
+- Runtime ID: `pr_{PR_NUMBER}-AbCd1234EfGh`
+- Runtime ARN: Full ARN for AWS Console access
+- Version: Current version number
+- Status: READY, CREATING, or UPDATING
+- DEFAULT endpoint ready to use
+- AWS Console links
+- S3 location
+- **Hidden HTML comment** with runtime ID for workflow detection
+
+**Example Comment:**
+```markdown
+🔄 Runtime Updated
+
+Runtime Name: pr_42
+Runtime ID: pr_42-AbCd1234EfGh5678
+Version: 3
+Status: ✅ READY
+
+📍 Endpoints
+- DEFAULT: Ready to use
+
+🔗 AWS Console Links
+- View Runtime
+- CloudWatch Logs
+
+<!-- RUNTIME_ID: pr_42-AbCd1234EfGh5678 -->
+```
+
+**Key Behavior:** The DEFAULT endpoint automatically tracks the latest version, enabling rapid iteration without manual promotion.
+
+---
+
+### Workflow 2: Production Deployment
+**File:** `.github/workflows/prod-deploy.yml`
+
+**Purpose:** Deploys new production versions to a stable runtime, gated by manual approval.
+
+#### Triggers
+- Push to `main` branch (typically from merged PRs)
+- Only when changes affect: `agent/**`, `prompts/**`, or `deployment_utils.py`
+
+#### What It Does
+
+**On First Run (No Prod Runtime Exists):**
+1. Searches for runtime named `prod` - not found
+2. Deploys new production runtime:
+   - Calls `deploy_runtime_with_deps.py --name prod`
+   - Creates runtime with V1
+   - DEFAULT endpoint auto-created pointing to V1
+3. Uploads code package to S3: `s3://bucket/prod/v1/code.zip`
+
+**On Subsequent Runs (Prod Runtime Exists):**
+1. Finds existing `prod` runtime by name
+2. Updates runtime:
+   - Calls `update_runtime_with_deps.py {RUNTIME_ID}`
+   - Creates new version (V2, V3, etc.)
+   - DEFAULT endpoint **automatically updates** to new version
+3. Uploads new code package to S3: `s3://bucket/prod/v{N}/code.zip`
+
+**In Both Cases:**
+1. Extracts PR number from merge commit message
+2. Retrieves PR runtime ID from the original PR's comments
+3. Checks current `prod` endpoint status (if exists)
+4. Creates GitHub Issue with all deployment metadata
+
+#### Output
+
+Creates a GitHub Issue titled: `🚀 Production Deployment Ready - Version {N} (PR #{PR})`
+
+**Issue contains:**
+- **Hidden metadata comment** for workflow automation:
+  ```html
+  <!-- DEPLOYMENT_METADATA
+  RUNTIME_ID: prod-XyZ9876WvUt
+  VERSION: 5
+  PR_RUNTIME_ID: pr_123-AbCd1234EfGh
+  -->
+  ```
+- Deployment details (runtime ID, version, status, prompt, commit)
+- Current production state (what version `prod` endpoint is serving)
+  - *Note: On the first deployment, this will show "none" as the `prod` endpoint is created during promotion.*
+- S3 location
+- Instructions: **"Add `approved` label to promote"**
+- Alternative manual promotion CLI command
+- AWS Console links
+- **Labels:** `deployment`, `production`, `needs-promotion`
+
+**Important:** This workflow does **NOT** create or update the `prod` endpoint! The new version exists and DEFAULT endpoint points to it, but production traffic is not affected until promotion.
+
+**Key Behavior:** Separates version deployment from production promotion, enabling testing before go-live.
+
+---
+
+### Workflow 3: Production Promotion
+**File:** `.github/workflows/prod-promote.yml`
+
+**Purpose:** Promotes approved versions to production and cleans up PR resources.
+
+#### Triggers
+
+**Primary (IssueOps):**
+- Label `approved` added to an issue
+- Issue must also have label `needs-promotion`
+
+**Backup (Manual):**
+- Workflow dispatch (manual trigger from GitHub Actions UI or CLI)
+- Inputs: `prod_runtime_version` (required), `pr_runtime_id` (optional), `issue_number` (optional)
+
+#### What It Does
+
+**When Triggered by Issue Label:**
+1. Validates issue has both `approved` and `needs-promotion` labels
+2. Parses hidden metadata from issue body:
+   - Extracts: `RUNTIME_ID`, `VERSION`, `PR_RUNTIME_ID`
+3. Looks up prod runtime (uses runtime ID from issue metadata)
+4. Verifies the version exists in runtime's version history
+
+**Endpoint Management:**
+5. Checks if custom `prod` endpoint exists:
+   - **If NO:** Creates `prod` endpoint pointing to the specified version
+     - Calls `create_endpoint.py {RUNTIME_ID} {VERSION} prod`
+   - **If YES:** Updates `prod` endpoint to point to the specified version
+     - Calls `update_endpoint.py {RUNTIME_ID} prod {VERSION}`
+
+**Cleanup:**
+6. If PR runtime ID was provided in metadata:
+   - Deletes PR runtime and all its endpoints
+   - Calls `cleanup_runtime.py {PR_RUNTIME_ID}`
+   - S3 files preserved for audit
+
+**Issue Management:**
+7. Posts promotion summary to the deployment issue
+8. Changes labels from `needs-promotion` to `promoted`
+9. Closes the issue
+
+**When Triggered Manually:**
+- Uses provided inputs instead of parsing issue
+- Optionally updates a specified issue if `issue_number` provided
+- Otherwise searches for open issues with `needs-promotion` label matching the version
+
+#### Output
+
+**To Issue:**
+```markdown
+✅ Promoted to production
+
+Trigger: IssueOps (approved label)
+Runtime ID: prod-XyZ9876WvUt
+Promoted Version: 5
+Previous Version: 4
+Endpoint Status: ✅ READY
+Target Version: 5
+Live Version: 5
+
+🧹 Cleanup
+✅ PR runtime (pr_123-AbCd1234) has been cleaned up
+
+🔗 Production Links
+- AWS Console
+- CloudWatch Logs
+- Endpoint ARN
+
+📊 S3 Location
+s3://bucket/prod/v5/code.zip
+```
+
+**To Workflow Summary:**
+- Complete promotion details
+- Endpoint transition information
+- Cleanup status
+- Links and resources
+
+**Key Behavior:** This is the ONLY workflow that creates/updates the `prod` endpoint, ensuring all production changes are deliberate and approved.
+
+---
+
+## Rollback Process
+
+If a promoted version causes issues, rollback using the manual trigger:
+
+```bash
+gh workflow run prod-promote.yml \
+  -f prod_runtime_version=4 \
+  -f issue_number=42
+```
+This will:
+1. Update `prod` endpoint to point back to V4
+2. Complete in seconds (no redeployment needed)
+3. Post rollback summary to issue #42
+
+**Note:** Manual rollbacks via workflow dispatch do not trigger PR cleanup, as no PR runtime ID is provided.
+
+**Why It's Fast:** Versions are immutable and already exist. Rollback is just an endpoint pointer update, not a code rebuild or redeployment.
+**Why It's Fast:** Versions are immutable and already exist. Rollback is just an endpoint pointer update, not a code rebuild or redeployment.
+
+---
+
+## Technical Deep Dive
 
 ### Runtime ID Flow Through Workflows
 
@@ -223,11 +543,13 @@ Understanding how runtime IDs propagate through the system is key to the archite
 RUNTIME_NAME="pr_${PR_NUMBER}"  # e.g., pr_42
 
 # Extracts runtime ID from deployment output
-RUNTIME_ID=$(echo "$OUTPUT" | grep -oP 'Runtime ID: \K[^\s]+')
-# Result: pr_42-AbCd1234EfGh5678
-
 # Stores in PR comment with hidden HTML marker
 <!-- RUNTIME_ID: pr_42-AbCd1234EfGh5678 -->
+```
+
+**Note:** The workflow assumes runtime IDs follow the standard AgentCore format `name-randomId` (e.g., `pr_42-AbCd...`) for parsing.
+
+This hidden comment allows future workflow runs to detect the runtime exists.
 ```
 
 This hidden comment allows future workflow runs to detect the runtime exists.
@@ -349,49 +671,51 @@ After rollback:
 - ✅ **Staged rollouts** - Gradually migrate endpoints from v1 → v2
 - ✅ **Efficient scaling** - One runtime with many versions vs. managing separate runtimes
 
-### Gated Promotion Process
+### Gated Promotion Process (IssueOps)
 
-The promotion to production is **deliberately manual** via the IssueOps pattern. Here's why:
+The promotion to production is **deliberately manual** via the IssueOps pattern, leveraging AgentCore's endpoint behavior:
 
-#### The Problem with Auto-Promotion
-```
-❌ Auto-promote on merge:
-- No time for integration testing
-- Can't verify in staging first
-- No human review gate
-- Mistakes go straight to production
-```
+#### Understanding Endpoint Update Policies
 
-#### Our Solution: Approval Label
-```
-✅ IssueOps pattern:
-1. Merge creates new version (safe, not live)
-2. Review deployment issue (test endpoints, check logs)
-3. Add 'approved' label (explicit approval)
-4. Automation handles the rest (promotion + cleanup)
-```
+**DEFAULT endpoint:** Automatically tracks the latest version
+- Ideal for: PR testing, rapid iteration
+- Updates: Automatic on every `UpdateAgentRuntime`
+- Use case: Development and testing workflows
+
+#### Why Manual Promotion?
+
+When you merge to main, the production runtime gets a new version, but the **`prod` endpoint doesn't automatically update**. This separation provides:
+
+**Development Velocity:** DEFAULT endpoints eliminate manual promotion steps during PR iteration, accelerating feedback loops.
+
+**Production Safety:** Custom endpoints require explicit approval for production changes, preventing accidental deployments. **We cannot use the DEFAULT endpoint for production** because it automatically updates to the latest version on every merge, which bypasses approval gates.
+
+**Testing Window:** Time to validate the new version against the DEFAULT endpoint before promoting the `prod` endpoint.
+
+**Audit Trail:** GitHub Issues track who approved deployments and when.
+
+**Zero-Downtime Rollback:** Point the `prod` endpoint back to any previous version instantly without rebuilding artifacts.
 
 #### Approval Workflow
 ```mermaid
 graph LR
-    A[Version Deployed] --> B{Testing Pass?}
-    B -->|No| C[Fix Issues, Merge New PR]
-    B -->|Yes| D[Add approved Label]
-    D --> E[Auto-Promote to Prod]
-    E --> F[Auto-Cleanup PR Runtime]
-    F --> G[Issue Closed]
+    A[Merge to Main] --> B[New Version Created]
+    B --> C[DEFAULT Endpoint Auto-Updates]
+    C --> D{Testing Pass?}
+    D -->|No| E[Fix Issues, Merge New PR]
+    D -->|Yes| F[Add approved Label]
+    F --> G[UpdateAgentRuntimeEndpoint]
+    G --> H[prod Endpoint → New Version]
+    H --> I[Cleanup PR Runtime]
+    I --> J[Issue Closed]
     
-    style D fill:#c8e6c9
-    style E fill:#fff59d
-    style G fill:#c8e6c9
+    style C fill:#e3f2fd
+    style F fill:#c8e6c9
+    style G fill:#fff59d
+    style H fill:#c8e6c9
 ```
 
-**Benefits:**
-- 🛡️ **Safety gate** - Prevents bad deploys from reaching production
-- 🧪 **Testing window** - Time to verify new version works correctly
-- 📊 **Audit trail** - GitHub tracks who approved and when
-- 🔄 **Reversible** - Can test version X while prod still serves version X-1
-- 👥 **Team visibility** - Everyone sees what's being promoted
+This two-step process (create version → update endpoint) ensures deployments are **deliberate and traceable** while maintaining development velocity.
 
 ---
 
@@ -419,13 +743,27 @@ This role allows GitHub Actions to authenticate to AWS without storing long-term
 
 **Setup Instructions:**
 
-1. **Create OIDC Identity Provider** in IAM:
-   ```
-   Provider: token.actions.githubusercontent.com
-   Audience: sts.amazonaws.com
-   ```
+##### Step 1: Create OIDC Identity Provider
 
-2. **Create IAM Role** with trust policy:
+1. Go to **IAM Console** → **Identity providers** → **Add provider**
+2. Select **OpenID Connect**
+3. Enter provider details:
+   - **Provider URL**: `https://token.actions.githubusercontent.com`
+   - **Audience**: `sts.amazonaws.com`
+4. Click **Add provider**
+
+For detailed instructions, see:
+- [GitHub Docs: Configuring OIDC in AWS](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+- [AWS Blog: Use IAM roles to connect GitHub Actions](https://aws.amazon.com/blogs/security/use-iam-roles-to-connect-github-actions-to-actions-in-aws/)
+
+##### Step 2: Create IAM Role with Trust Policy
+
+1. Go to **IAM Console** → **Roles** → **Create role**
+2. Select **Web identity**
+3. Choose the OIDC provider you created: `token.actions.githubusercontent.com`
+4. Select **Audience**: `sts.amazonaws.com`
+5. Edit the trust policy to restrict to your repository:
+
    ```json
    {
      "Version": "2012-10-17",
@@ -449,98 +787,210 @@ This role allows GitHub Actions to authenticate to AWS without storing long-term
    }
    ```
 
-3. **Attach permissions policy**:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Action": [
-           "s3:PutObject",
-           "s3:GetObject",
-           "s3:ListBucket"
-         ],
-         "Resource": [
-           "arn:aws:s3:::YOUR-BUCKET-NAME/*",
-           "arn:aws:s3:::YOUR-BUCKET-NAME"
-         ]
-       },
-       {
-         "Effect": "Allow",
-         "Action": [
-           "bedrock-agentcore-control:CreateAgentRuntime",
-           "bedrock-agentcore-control:UpdateAgentRuntime",
-           "bedrock-agentcore-control:GetAgentRuntime",
-           "bedrock-agentcore-control:DeleteAgentRuntime",
-           "bedrock-agentcore-control:ListAgentRuntimes",
-           "bedrock-agentcore-control:CreateAgentRuntimeEndpoint",
-           "bedrock-agentcore-control:UpdateAgentRuntimeEndpoint",
-           "bedrock-agentcore-control:GetAgentRuntimeEndpoint",
-           "bedrock-agentcore-control:DeleteAgentRuntimeEndpoint",
-           "bedrock-agentcore-control:ListAgentRuntimeEndpoints"
-         ],
-         "Resource": "*"
-       },
-       {
-         "Effect": "Allow",
-         "Action": "iam:PassRole",
-         "Resource": "arn:aws:iam::YOUR_ACCOUNT_ID:role/AgentCoreExecutionRole"
-       }
-     ]
-   }
-   ```
+   Replace:
+   - `YOUR_ACCOUNT_ID` with your AWS account ID
+   - `YOUR_GITHUB_ORG` with your GitHub organization/username
+   - `YOUR_REPO` with your repository name
 
-4. **Note the Role ARN** - You'll need this for the workflows:
-   ```
-   arn:aws:iam::YOUR_ACCOUNT_ID:role/GitHub-Actions-Role
-   ```
+   The wildcard `*` allows any branch, PR, or environment to assume the role.
+
+##### Step 3: Attach Permissions Policy
+
+Create and attach a policy with these permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3Access",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::YOUR-BUCKET-NAME/*",
+        "arn:aws:s3:::YOUR-BUCKET-NAME"
+      ]
+    },
+    {
+      "Sid": "AgentCoreFullAccess",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore-control:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassExecutionRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::YOUR_ACCOUNT_ID:role/AgentCoreExecutionRole"
+    }
+  ]
+}
+```
+
+Alternatively, attach the AWS managed policy: **`BedrockAgentCoreFullAccess`**
+
+##### Step 4: Configure Workflow Permissions
+
+Your workflow needs `id-token: write` permission to request OIDC tokens:
+
+```yaml
+permissions:
+  id-token: write   # Required for OIDC authentication
+  contents: read    # Required for actions/checkout
+```
+
+This is already configured in all three workflow files.
+
+##### Step 5: Note the Role ARN
+
+You'll need this ARN for the workflows:
+```
+arn:aws:iam::YOUR_ACCOUNT_ID:role/GitHub-Actions-Role
+```
 
 #### 🤖 Role 2: AgentCore Execution Role
 
 This role is assumed by the AgentCore runtime when executing your agent code.
 
-**Purpose:** Allows your agent to call Bedrock models, access DynamoDB, etc.
+**Purpose:** Allows your agent to access AWS services (Bedrock models, CloudWatch Logs, X-Ray, etc.)
 
 **Setup Instructions:**
 
-1. **Create IAM Role** with trust policy:
+##### Step 1: Create IAM Role with Trust Policy
+
+1. Go to **IAM Console** → **Roles** → **Create role**
+2. Select **Custom trust policy**
+3. Use this trust policy:
+
    ```json
    {
      "Version": "2012-10-17",
      "Statement": [
        {
+         "Sid": "AssumeRolePolicy",
          "Effect": "Allow",
          "Principal": {
-           "Service": "bedrock.amazonaws.com"
+           "Service": "bedrock-agentcore.amazonaws.com"
          },
-         "Action": "sts:AssumeRole"
+         "Action": "sts:AssumeRole",
+         "Condition": {
+           "StringEquals": {
+             "aws:SourceAccount": "YOUR_ACCOUNT_ID"
+           },
+           "ArnLike": {
+             "aws:SourceArn": "arn:aws:bedrock-agentcore:YOUR_REGION:YOUR_ACCOUNT_ID:*"
+           }
+         }
        }
      ]
    }
    ```
 
-2. **Attach permissions policy** (customize based on your agent's needs):
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Action": [
-           "bedrock:InvokeModel",
-           "bedrock:InvokeModelWithResponseStream"
-         ],
-         "Resource": "arn:aws:bedrock:*::foundation-model/*"
-       }
-     ]
-   }
-   ```
+   Replace:
+   - `YOUR_ACCOUNT_ID` with your AWS account ID
+   - `YOUR_REGION` with your AWS region (e.g., `us-west-2`)
 
-3. **Note the Role ARN**:
-   ```
-   arn:aws:iam::YOUR_ACCOUNT_ID:role/AgentCoreExecutionRole
-   ```
+##### Step 2: Attach Permissions Policy
+
+Attach a policy with the permissions your agent needs. Here's the standard policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ECRImageAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchLogsAccess",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": [
+        "arn:aws:logs:YOUR_REGION:YOUR_ACCOUNT_ID:log-group:/aws/bedrock-agentcore/runtimes/*"
+      ]
+    },
+    {
+      "Sid": "XRayAccess",
+      "Effect": "Allow",
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "bedrock-agentcore"
+        }
+      }
+    },
+    {
+      "Sid": "BedrockModelInvocation",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*"
+      ]
+    }
+  ]
+}
+```
+
+**For production**, scope down the `BedrockModelInvocation` to specific models:
+
+```json
+{
+  "Sid": "BedrockModelInvocation",
+  "Effect": "Allow",
+  "Action": [
+    "bedrock:InvokeModel",
+    "bedrock:InvokeModelWithResponseStream"
+  ],
+  "Resource": [
+    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
+    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-haiku-20240307-v1:0"
+  ]
+}
+```
+
+For complete documentation, see:
+- [AWS AgentCore Runtime Permissions](https://aws.github.io/bedrock-agentcore-starter-toolkit/user-guide/runtime/permissions.html#runtime-execution-role)
+
+##### Step 3: Note the Role ARN
+
+You'll need this ARN for the deployment scripts:
+```
+arn:aws:iam::YOUR_ACCOUNT_ID:role/AgentCoreExecutionRole
+```
 
 ### Step 2: Update Code with Your ARNs
 
@@ -590,7 +1040,9 @@ ROLE_ARN = 'arn:aws:iam::YOUR_ACCOUNT_ID:role/AgentCoreExecutionRole'
 #### Update S3 Bucket Name (throughout codebase)
 
 Search and replace `agentcore-runtime-pr-deployment-demo` with your S3 bucket name in:
-- `deployment_utils.py`
+- `deploy_runtime_with_deps.py`
+- `update_runtime_with_deps.py`
+- `cleanup_runtime.py`
 - `.github/workflows/pr-deploy.yml`
 - `.github/workflows/prod-deploy.yml`
 - `.github/workflows/prod-promote.yml`
