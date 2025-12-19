@@ -46,7 +46,7 @@ Before diving into the workflow, it's crucial to understand the AWS Bedrock Agen
 | **Direct code package size (compressed)** | 250 MB | No | ZIP file size limit |
 | **Docker image size** | 1 GB | No | For container-based deployments |
 
-*Source: [AWS Bedrock AgentCore Runtime Quota Limit Documentation]([https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html])*
+*Source: [AWS Bedrock AgentCore Runtime Quota Limit Documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html]*
 
 ### Understanding the Service Design Philosophy
 
