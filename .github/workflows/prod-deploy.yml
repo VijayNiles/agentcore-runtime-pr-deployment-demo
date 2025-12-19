@@ -264,12 +264,13 @@ jobs:
             
             1. **Test the new version** using the DEFAULT endpoint or version-specific endpoint
             2. **Verify functionality** meets requirements
-            3. **Promote to production** by running the [Production Promotion workflow](../actions/workflows/prod-promote.yml)
-               - Click "Run workflow"
-               - Enter **prod_runtime_version**: \`${version}\`
-               ${prNumber && prRuntimeId ? `- Enter **pr_runtime_id**: \`${prRuntimeId}\` (for automatic cleanup)\n` : ''}
+            3. **Promote to production** by adding the \`approved\` label to this issue
+               - The workflow will automatically:
+                 - Update the prod endpoint to version ${version}
+                 ${prNumber && prRuntimeId ? `- Clean up PR runtime \`${prRuntimeId}\`\n                 ` : ''}
+                 - Close this issue when complete
             
-            **CLI Command (copy-paste ready):**
+            **Alternative - Manual promotion via CLI:**
             \`\`\`bash
             gh workflow run prod-promote.yml -f prod_runtime_version=${version}${prRuntimeId ? ` -f pr_runtime_id=${prRuntimeId}` : ''}
             \`\`\`
