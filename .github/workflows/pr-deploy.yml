@@ -46,6 +46,7 @@ jobs:
         id: check_runtime
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           RUNTIME_NAME="pr_${PR_NUMBER}"
           echo "runtime_name=${RUNTIME_NAME}" >> $GITHUB_OUTPUT
@@ -62,8 +63,6 @@ jobs:
             echo "is_update=false" >> $GITHUB_OUTPUT
             echo "No existing runtime found - will deploy new"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
       
       - name: Determine prompt file
         id: detect_prompt
