@@ -169,6 +169,27 @@ When the GitHub Actions workflow calls `CreateAgentRuntime`, the API response re
 
 This provides developers with **immediate, copy-paste-ready commands** to test their PR runtime without searching through logs or the AWS console.
 
+**Example PR Comment:**
+```
+🤖 **AgentCore Runtime Deployed**
+
+**Runtime ARN:** `arn:aws:bedrock-agentcore:us-west-2:123456:runtime/pr_42-AbCd1234`
+**Runtime ID:** `pr_42-AbCd1234`
+**Version:** 1
+**Endpoint:** DEFAULT (auto-created)
+
+**Test your agent:**
+```python
+import boto3
+client = boto3.client('bedrock-agentcore')
+response = client.invoke_agent_runtime(
+    agentRuntimeId='pr_42-AbCd1234',
+    endpointId='DEFAULT',
+    inputText='Your test prompt'
+)
+```
+```
+
 ---
 
 ## Our Workflow Strategy
