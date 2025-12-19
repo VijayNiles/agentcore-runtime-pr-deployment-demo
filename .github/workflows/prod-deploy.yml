@@ -231,7 +231,13 @@ jobs:
               issueTitle += ` (PR #${prNumber})`;
             }
             
-            const issueBody = `## ${isUpdate ? '🔄 Production Runtime Updated' : '🆕 Production Runtime Created'}
+            const issueBody = `<!-- DEPLOYMENT_METADATA
+            RUNTIME_ID: ${runtimeId}
+            VERSION: ${version}
+            PR_RUNTIME_ID: ${prRuntimeId || 'NONE'}
+            -->
+            
+            ## ${isUpdate ? '🔄 Production Runtime Updated' : '🆕 Production Runtime Created'}
             
             A new production version has been deployed and is ready for promotion.
             

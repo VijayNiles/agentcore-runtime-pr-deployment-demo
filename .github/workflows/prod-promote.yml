@@ -1,6 +1,11 @@
 name: Production Promotion
 
 on:
+  # Primary trigger: IssueOps pattern - add 'approved' label to deployment issue
+  issues:
+    types: [labeled]
+  
+  # Backup trigger: Manual workflow dispatch for emergency/testing
   workflow_dispatch:
     inputs:
       prod_runtime_version:
@@ -8,7 +13,11 @@ on:
         required: true
         type: string
       pr_runtime_id:
-        description: 'PR runtime ID to cleanup (optional - leave empty to skip cleanup). Get this from the production deployment issue.'
+        description: 'PR runtime ID to cleanup (optional - leave empty to skip cleanup)'
+        required: false
+        type: string
+      issue_number:
+        description: 'Issue number to update after promotion (optional)'
         required: false
         type: string
 
@@ -21,6 +30,12 @@ permissions:
 jobs:
   promote:
     runs-on: ubuntu-latest
+    # Only run for approved deployment issues OR manual workflow dispatch
+    if: |
+      (github.event_name == 'issues' && 
+       github.event.label.name == 'approved' && 
+       contains(github.event.issue.labels.*.name, 'needs-promotion')) ||
+      github.event_name == 'workflow_dispatch'
     
     steps:
       - name: Checkout code
@@ -42,25 +57,99 @@ jobs:
           role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
           aws-region: us-west-2
       
+      - name: Parse deployment metadata from issue
+        if: github.event_name == 'issues'
+        id: parse_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueBody = context.payload.issue.body;
+            
+            // Extract metadata from hidden HTML comment
+            const metadataMatch = issueBody.match(/<!-- DEPLOYMENT_METADATA\s+([\s\S]*?)\s+-->/);
+            if (!metadataMatch) {
+              core.setFailed('Could not find deployment metadata in issue. Issue may not be a valid deployment issue.');
+              return;
+            }
+            
+            const metadata = metadataMatch[1];
+            
+            // Parse each field
+            const runtimeIdMatch = metadata.match(/RUNTIME_ID:\s*(\S+)/);
+            const versionMatch = metadata.match(/VERSION:\s*(\S+)/);
+            const prRuntimeIdMatch = metadata.match(/PR_RUNTIME_ID:\s*(\S+)/);
+            
+            if (!runtimeIdMatch || !versionMatch) {
+              core.setFailed('Invalid metadata format in deployment issue.');
+              return;
+            }
+            
+            const runtimeId = runtimeIdMatch[1];
+            const version = versionMatch[1];
+            const prRuntimeId = prRuntimeIdMatch ? prRuntimeIdMatch[1] : '';
+            
+            // Set outputs
+            core.setOutput('runtime_id', runtimeId);
+            core.setOutput('version', version);
+            core.setOutput('pr_runtime_id', prRuntimeId === 'NONE' ? '' : prRuntimeId);
+            core.setOutput('issue_number', context.payload.issue.number.toString());
+            
+            console.log(`Parsed from issue #${context.payload.issue.number}:`);
+            console.log(`  Runtime ID: ${runtimeId}`);
+            console.log(`  Version: ${version}`);
+            console.log(`  PR Runtime ID: ${prRuntimeId}`);
+      
+      - name: Set variables for manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        id: manual_inputs
+        run: |
+          echo "runtime_id=" >> $GITHUB_OUTPUT
+          echo "version=${{ github.event.inputs.prod_runtime_version }}" >> $GITHUB_OUTPUT
+          echo "pr_runtime_id=${{ github.event.inputs.pr_runtime_id }}" >> $GITHUB_OUTPUT
+          echo "issue_number=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
+      
+      - name: Merge inputs from both trigger types
+        id: inputs
+        run: |
+          if [ "${{ github.event_name }}" == "issues" ]; then
+            echo "runtime_id=${{ steps.parse_issue.outputs.runtime_id }}" >> $GITHUB_OUTPUT
+            echo "version=${{ steps.parse_issue.outputs.version }}" >> $GITHUB_OUTPUT
+            echo "pr_runtime_id=${{ steps.parse_issue.outputs.pr_runtime_id }}" >> $GITHUB_OUTPUT
+            echo "issue_number=${{ steps.parse_issue.outputs.issue_number }}" >> $GITHUB_OUTPUT
+            echo "trigger_type=IssueOps (approved label)" >> $GITHUB_OUTPUT
+          else
+            echo "runtime_id=${{ steps.manual_inputs.outputs.runtime_id }}" >> $GITHUB_OUTPUT
+            echo "version=${{ steps.manual_inputs.outputs.version }}" >> $GITHUB_OUTPUT
+            echo "pr_runtime_id=${{ steps.manual_inputs.outputs.pr_runtime_id }}" >> $GITHUB_OUTPUT
+            echo "issue_number=${{ steps.manual_inputs.outputs.issue_number }}" >> $GITHUB_OUTPUT
+            echo "trigger_type=Manual workflow dispatch" >> $GITHUB_OUTPUT
+          fi
+      
       - name: Lookup prod runtime
         id: get_runtime
         run: |
-          # Find prod runtime by name
-          RUNTIME_ID=$(python3 -c 'import boto3; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); runtime = client.get_agent_runtime(agentRuntimeId="prod"); print(runtime["agentRuntimeId"])' 2>&1)
-          
-          if [ -z "$RUNTIME_ID" ]; then
-            echo "ERROR: Could not find prod runtime"
-            exit 1
+          # If runtime ID was provided from issue, use it directly
+          if [ -n "${{ steps.inputs.outputs.runtime_id }}" ]; then
+            RUNTIME_ID="${{ steps.inputs.outputs.runtime_id }}"
+            echo "Using runtime ID from issue: ${RUNTIME_ID}"
+          else
+            # Otherwise, find prod runtime by name (for manual triggers without issue)
+            RUNTIME_ID=$(python3 -c 'import boto3; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); paginator = client.get_paginator("list_agent_runtimes"); result = [r["agentRuntimeId"] for page in paginator.paginate() for r in page.get("agentRuntimeSummaries", []) if r["agentRuntimeName"] == "prod"]; print(result[0] if result else "")' 2>&1)
+            
+            if [ -z "$RUNTIME_ID" ]; then
+              echo "ERROR: Could not find prod runtime"
+              exit 1
+            fi
+            echo "Found prod runtime by name lookup: ${RUNTIME_ID}"
           fi
           
           echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
-          echo "Found prod runtime: ${RUNTIME_ID}"
       
       - name: Verify version exists
         id: verify_version
         run: |
           RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
-          VERSION="${{ github.event.inputs.prod_runtime_version }}"
+          VERSION="${{ steps.inputs.outputs.version }}"
           
           # Get runtime details
           RUNTIME_JSON=$(aws bedrock-agentcore-control get-agent-runtime \
@@ -105,7 +194,7 @@ jobs:
         id: create_endpoint
         run: |
           RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
-          VERSION="${{ github.event.inputs.prod_runtime_version }}"
+          VERSION="${{ steps.inputs.outputs.version }}"
           
           echo "Creating prod endpoint for version ${VERSION}..."
           python3 create_endpoint.py "${RUNTIME_ID}" "${VERSION}" prod
@@ -117,7 +206,7 @@ jobs:
         id: update_endpoint
         run: |
           RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
-          VERSION="${{ github.event.inputs.prod_runtime_version }}"
+          VERSION="${{ steps.inputs.outputs.version }}"
           CURRENT_VERSION="${{ steps.check_endpoint.outputs.current_version }}"
           
           if [ "$VERSION" == "$CURRENT_VERSION" ]; then
@@ -131,10 +220,10 @@ jobs:
           fi
       
       - name: Cleanup PR runtime
-        if: github.event.inputs.pr_runtime_id != ''
+        if: steps.inputs.outputs.pr_runtime_id != ''
         id: cleanup
         run: |
-          PR_RUNTIME_ID="${{ github.event.inputs.pr_runtime_id }}"
+          PR_RUNTIME_ID="${{ steps.inputs.outputs.pr_runtime_id }}"
           echo "Cleaning up PR runtime: ${PR_RUNTIME_ID}"
           
           # Run cleanup script with auto-confirmation
@@ -169,8 +258,10 @@ jobs:
         with:
           script: |
             const runtimeId = '${{ steps.get_runtime.outputs.runtime_id }}';
-            const version = '${{ github.event.inputs.prod_runtime_version }}';
-            const prRuntimeId = '${{ github.event.inputs.pr_runtime_id }}';
+            const version = '${{ steps.inputs.outputs.version }}';
+            const prRuntimeId = '${{ steps.inputs.outputs.pr_runtime_id }}';
+            const issueNumber = '${{ steps.inputs.outputs.issue_number }}';
+            const triggerType = '${{ steps.inputs.outputs.trigger_type }}';
             const endpointArn = '${{ steps.final_state.outputs.endpoint_arn }}';
             const targetVersion = '${{ steps.final_state.outputs.target_version }}';
             const liveVersion = '${{ steps.final_state.outputs.live_version }}';
@@ -184,6 +275,7 @@ jobs:
             let summary = `## ✅ Production Promotion Complete\n\n`;
             summary += `Version **${version}** has been promoted to production!\n\n`;
             summary += `### 📋 Promotion Details\n\n`;
+            summary += `**Trigger**: ${triggerType}\n`;
             summary += `**Runtime ID**: \`${runtimeId}\`\n`;
             summary += `**Promoted Version**: ${version}\n`;
             summary += `**Previous Version**: ${oldVersion === 'none' ? 'N/A (first deployment)' : oldVersion}\n`;
@@ -217,21 +309,16 @@ jobs:
               .addRaw(summary)
               .write();
             
-            // Also find and close the deployment issue
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              labels: 'needs-promotion',
-              state: 'open'
-            });
-            
-            for (const issue of issues) {
-              if (issue.title.includes(`Version ${version}`)) {
+            // Update the deployment issue if we have an issue number
+            if (issueNumber && issueNumber !== '') {
+              const issueNum = parseInt(issueNumber);
+              
+              try {
                 // Comment on the issue
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: issue.number,
+                  issue_number: issueNum,
                   body: `✅ **Promoted to production**\n\n${summary}`
                 });
                 
@@ -239,12 +326,48 @@ jobs:
                 await github.rest.issues.update({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: issue.number,
+                  issue_number: issueNum,
                   state: 'closed',
                   labels: ['deployment', 'production', 'promoted']
                 });
                 
-                break;
+                console.log(`✅ Updated and closed issue #${issueNum}`);
+              } catch (error) {
+                console.log(`⚠️ Could not update issue #${issueNum}: ${error.message}`);
+              }
+            } else {
+              // Try to find issue by version if no issue number provided (backward compatibility)
+              try {
+                const { data: issues } = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  labels: 'needs-promotion',
+                  state: 'open'
+                });
+                
+                for (const issue of issues) {
+                  if (issue.title.includes(`Version ${version}`)) {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issue.number,
+                      body: `✅ **Promoted to production**\n\n${summary}`
+                    });
+                    
+                    await github.rest.issues.update({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issue.number,
+                      state: 'closed',
+                      labels: ['deployment', 'production', 'promoted']
+                    });
+                    
+                    console.log(`✅ Found and updated issue #${issue.number}`);
+                    break;
+                  }
+                }
+              } catch (error) {
+                console.log(`⚠️ Could not find/update deployment issue: ${error.message}`);
               }
             }
             
