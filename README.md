@@ -226,7 +226,7 @@ graph TB
         B --> C{Runtime Exists?}
         C -->|No| D[Create Runtime: pr_123 v1]
         C -->|Yes| E[Update Runtime: pr_123 v2, v3...]
-        D --> F[Post Comment on PR]
+        D --> F[Post/Update Comment on PR]
         E --> F
         F --> G[Developer Pushes More Changes]
         G --> B
@@ -239,39 +239,45 @@ graph TB
         J -->|Yes| L[Update Runtime: prod v2, v3...]
         K --> M[Create GitHub Issue]
         L --> M
-        M --> N[Issue with Labels: needs-promotion]
+        M --> N[Issue Labels: deployment, production, needs-promotion]
     end
     
     subgraph "3. Production Promotion IssueOps"
-        N --> O[Reviewer Adds approved Label]
-        O --> P[prod-promote.yml Triggered]
-        P --> Q[Update prod Endpoint to New Version]
-        Q --> R[Cleanup PR Runtime: pr_123]
-        R --> S[Close Issue with Label: promoted]
+        O[Reviewer Adds approved Label] --> P[prod-promote.yml Triggered]
+        P --> Q{prod Endpoint Exists?}
+        Q -->|No| R[Create prod Endpoint → Version N]
+        Q -->|Yes| S[Update prod Endpoint → Version N]
+        R --> T[Cleanup PR Runtime]
+        S --> T
+        T --> U[Close Issue, Add promoted Label]
     end
     
     subgraph "AWS Resources"
-        T1[S3: code.zip Storage]
-        T2[(AgentCore Runtimes)]
-        T3[AgentCore Endpoints]
-        
-        D -.Uploads.-> T1
-        E -.Uploads.-> T1
-        K -.Uploads.-> T1
-        L -.Uploads.-> T1
-        
-        D -.Creates.-> T2
-        K -.Creates.-> T2
-        Q -.Points To.-> T2
-        Q -.Updates.-> T3
+        W1[S3: code.zip Storage]
+        W2[(AgentCore Runtimes)]
+        W3[AgentCore Endpoints]
     end
+    
+    N --> O
+    D -.Uploads.-> W1
+    E -.Uploads.-> W1
+    K -.Uploads.-> W1
+    L -.Uploads.-> W1
+    D -.Creates.-> W2
+    E -.Updates.-> W2
+    K -.Creates.-> W2
+    L -.Updates.-> W2
+    R -.Creates.-> W3
+    S -.Updates.-> W3
+    T -.Deletes.-> W2
     
     style A fill:#e1f5ff
     style H fill:#e1f5ff
     style O fill:#c8e6c9
-    style Q fill:#fff59d
-    style R fill:#ffccbc
-    style S fill:#c8e6c9
+    style R fill:#fff59d
+    style S fill:#fff59d
+    style T fill:#ffccbc
+    style U fill:#c8e6c9
 ```
 
 ### Three-Stage Pipeline
