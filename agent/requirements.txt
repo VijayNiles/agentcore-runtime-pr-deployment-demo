@@ -1,2 +1,2 @@
-strands
+strands-agents
 bedrock-agentcore

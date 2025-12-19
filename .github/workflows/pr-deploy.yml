@@ -1,0 +1,254 @@
+name: PR Runtime Deployment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'agent/**'
+      - 'prompts/**'
+      - 'deployment_utils.py'
+      - '.github/workflows/pr-deploy.yml'
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+          
+          # Install uv for ARM64 dependency packaging
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+      
+      - name: Check for existing runtime
+        id: check_runtime
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          RUNTIME_NAME="pr_${PR_NUMBER}"
+          echo "runtime_name=${RUNTIME_NAME}" >> $GITHUB_OUTPUT
+          
+          # Check if PR comment with runtime ID exists
+          COMMENT_BODY=$(gh pr view $PR_NUMBER --json comments --jq '.comments[] | select(.body | contains("<!-- RUNTIME_ID:")) | .body' || echo "")
+          
+          if [ -n "$COMMENT_BODY" ]; then
+            RUNTIME_ID=$(echo "$COMMENT_BODY" | grep -oP '<!-- RUNTIME_ID: \K[^-]+-.+?(?= -->)')
+            echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+            echo "is_update=true" >> $GITHUB_OUTPUT
+            echo "Found existing runtime: ${RUNTIME_ID}"
+          else
+            echo "is_update=false" >> $GITHUB_OUTPUT
+            echo "No existing runtime found - will deploy new"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      
+      - name: Determine prompt file
+        id: detect_prompt
+        run: |
+          # Check if any prompt files changed in this PR
+          CHANGED_PROMPTS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^prompts/.*\.txt$' || echo "")
+          
+          if [ -n "$CHANGED_PROMPTS" ]; then
+            # Use the first changed prompt file
+            PROMPT_FILE=$(echo "$CHANGED_PROMPTS" | head -n 1)
+            echo "prompt_file=${PROMPT_FILE}" >> $GITHUB_OUTPUT
+            echo "Using prompt: ${PROMPT_FILE}"
+          else
+            echo "prompt_file=" >> $GITHUB_OUTPUT
+            echo "No prompt file specified"
+          fi
+      
+      - name: Deploy new runtime
+        if: steps.check_runtime.outputs.is_update == 'false'
+        id: deploy
+        run: |
+          RUNTIME_NAME="${{ steps.check_runtime.outputs.runtime_name }}"
+          
+          if [ -n "${{ steps.detect_prompt.outputs.prompt_file }}" ]; then
+            PROMPT_ARG="--prompt ${{ steps.detect_prompt.outputs.prompt_file }}"
+          else
+            PROMPT_ARG=""
+          fi
+          
+          # Deploy and capture output
+          OUTPUT=$(python3 deploy_runtime_with_deps.py --name "${RUNTIME_NAME}" ${PROMPT_ARG} 2>&1)
+          echo "$OUTPUT"
+          
+          # Extract runtime ID and ARN from output
+          RUNTIME_ID=$(echo "$OUTPUT" | grep -oP 'Runtime ID: \K[^\s]+' | head -1)
+          RUNTIME_ARN=$(echo "$OUTPUT" | grep -oP 'Runtime ARN: \K[^\s]+' | head -1)
+          VERSION=$(echo "$OUTPUT" | grep -oP 'Version: \K[^\s]+' | head -1)
+          
+          echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+          echo "runtime_arn=${RUNTIME_ARN}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          
+          # Save full output for comment
+          echo "$OUTPUT" > deploy_output.txt
+      
+      - name: Update existing runtime
+        if: steps.check_runtime.outputs.is_update == 'true'
+        id: update
+        run: |
+          RUNTIME_ID="${{ steps.check_runtime.outputs.runtime_id }}"
+          
+          if [ -n "${{ steps.detect_prompt.outputs.prompt_file }}" ]; then
+            PROMPT_ARG="--prompt ${{ steps.detect_prompt.outputs.prompt_file }}"
+          else
+            PROMPT_ARG=""
+          fi
+          
+          # Update and capture output
+          OUTPUT=$(python3 update_runtime_with_deps.py "${RUNTIME_ID}" ${PROMPT_ARG} 2>&1)
+          echo "$OUTPUT"
+          
+          # Extract runtime ARN and version from output
+          RUNTIME_ARN=$(echo "$OUTPUT" | grep -oP 'Runtime ARN: \K[^\s]+' | head -1)
+          VERSION=$(echo "$OUTPUT" | grep -oP 'New Version: \K[^\s]+' | head -1)
+          
+          echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+          echo "runtime_arn=${RUNTIME_ARN}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          
+          # Save full output for comment
+          echo "$OUTPUT" > update_output.txt
+      
+      - name: Get runtime details
+        id: runtime_details
+        run: |
+          if [ "${{ steps.check_runtime.outputs.is_update }}" == "true" ]; then
+            RUNTIME_ID="${{ steps.update.outputs.runtime_id }}"
+            VERSION="${{ steps.update.outputs.version }}"
+          else
+            RUNTIME_ID="${{ steps.deploy.outputs.runtime_id }}"
+            VERSION="${{ steps.deploy.outputs.version }}"
+          fi
+          
+          # Get runtime details
+          RUNTIME_JSON=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" --region us-west-2)
+          
+          echo "runtime_json<<EOF" >> $GITHUB_OUTPUT
+          echo "$RUNTIME_JSON" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          STATUS=$(echo "$RUNTIME_JSON" | jq -r '.status')
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+      
+      - name: Post PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const isUpdate = '${{ steps.check_runtime.outputs.is_update }}' === 'true';
+            const runtimeId = isUpdate ? '${{ steps.update.outputs.runtime_id }}' : '${{ steps.deploy.outputs.runtime_id }}';
+            const runtimeArn = isUpdate ? '${{ steps.update.outputs.runtime_arn }}' : '${{ steps.deploy.outputs.runtime_arn }}';
+            const version = isUpdate ? '${{ steps.update.outputs.version }}' : '${{ steps.deploy.outputs.version }}';
+            const status = '${{ steps.runtime_details.outputs.status }}';
+            const runtimeName = '${{ steps.check_runtime.outputs.runtime_name }}';
+            const promptFile = '${{ steps.detect_prompt.outputs.prompt_file }}' || 'Default prompt';
+            const commitSha = context.payload.pull_request.head.sha.substring(0, 7);
+            
+            const statusEmoji = status === 'READY' ? '✅' : status === 'CREATING' || status === 'UPDATING' ? '⏳' : '❌';
+            
+            const commentBody = `## ${isUpdate ? '🔄 Runtime Updated' : '🚀 Runtime Deployed'}
+            
+            **Runtime Name**: \`${runtimeName}\`
+            **Runtime ID**: \`${runtimeId}\`
+            **Version**: ${version}
+            **Status**: ${statusEmoji} ${status}
+            **Prompt**: \`${promptFile}\`
+            **Commit**: ${commitSha}
+            
+            ### 📍 Endpoints
+            - **DEFAULT**: Ready to use
+            - **ARN**: \`${runtimeArn}\`
+            
+            ### 🔗 AWS Console Links
+            - [View Runtime](https://us-west-2.console.aws.amazon.com/bedrock/home?region=us-west-2#/agent-runtimes/${runtimeId})
+            - [CloudWatch Logs](https://us-west-2.console.aws.amazon.com/cloudwatch/home?region=us-west-2#logsV2:log-groups)
+            
+            ### 📊 S3 Location
+            \`\`\`
+            s3://agentcore-runtime-pr-deployment-demo/${runtimeName}/v${version}/code.zip
+            \`\`\`
+            
+            ### 🧪 Test Command
+            \`\`\`bash
+            python3 scripts/test_endpoint.py ${runtimeId}
+            \`\`\`
+            
+            <details>
+            <summary>📋 Full API Response</summary>
+            
+            \`\`\`json
+            ${{ steps.runtime_details.outputs.runtime_json }}
+            \`\`\`
+            </details>
+            
+            ---
+            ${isUpdate ? `Previous version: ${parseInt(version) - 1}` : 'Initial deployment for this PR'}
+            
+            <!-- RUNTIME_ID: ${runtimeId} -->
+            `;
+            
+            // Check for existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            
+            const existingComment = comments.find(comment => 
+              comment.body.includes('<!-- RUNTIME_ID:')
+            );
+            
+            if (existingComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: commentBody,
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: commentBody,
+              });
+            }
+      
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-logs
+          path: |
+            deploy_output.txt
+            update_output.txt
+          retention-days: 7

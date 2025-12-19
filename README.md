@@ -1,236 +1,261 @@
-# PR-Based Deployments for Amazon Bedrock AgentCore
+# AgentCore Runtime Deployment Scripts
 
-This demo showcases how to implement PR-based deployment workflows for agents on Amazon Bedrock AgentCore, demonstrating:
-
-- **Isolation**: PR environments don't affect production
-- **Versioning**: Multiple versions coexist on the same runtime
-- **Instant Rollback**: Change version pointers without rebuilding
-
-## Architecture
-
-- **Shared PROD Runtime**: `demo_prod_runtime` with versioned deployments
-- **Ephemeral PR Runtimes**: `demo_pr_{NUMBER}_runtime` created per PR
-- **Direct Code Deployment**: Using Custom zip + boto3 method with AgentCore Control APIs
-- **S3 Bucket**: `agentcore-runtime-pr-deployment-demo`
-- **Agent Framework**: Strands Agents with BedrockAgentCoreApp
-- **Execution Role**: `AgentCoreRunTimeRole` with BedrockAgentCoreFullAccess and S3 access
+This repository contains scripts for deploying and managing AWS Bedrock AgentCore Runtimes with proper ARM64 dependencies.
 
 ## Prerequisites
 
-```bash
-# Install dependencies
-pip install boto3 strands bedrock-agentcore
+- AWS credentials configured
+- Python 3.9+
+- `uv` package manager installed
+- Required Python packages: `boto3`
 
-# Configure AWS credentials (already set via OIDC for GitHub Actions)
-aws configure
+## Scripts Overview
+
+### 1. Deploy Runtime
+
+Deploy a new AgentCore Runtime with ARM64 dependencies.
+
+**Script:** `deploy_runtime_with_deps.py`
+
+**Usage:**
+```bash
+# Deploy with default prompt
+python3 deploy_runtime_with_deps.py
+
+# Deploy with a specific prompt file
+python3 deploy_runtime_with_deps.py --prompt <path_to_prompt_file>
 ```
 
-## Phase 1: The Setup (Baseline)
-
-### Step 1: Initialize with "Hello World" Agent
-
-The agent is already created in `agent/agent.py` with a "Hello World" prompt.
-
+**Examples:**
 ```bash
-# Commit and push to main
-git add .
-git commit -m "Initial commit: Hello World agent"
-git push origin main
+# Deploy with dad joke bot personality
+python3 deploy_runtime_with_deps.py --prompt prompts/dad_joke_bot.txt
+
+# Deploy with motivational quotes bot personality
+python3 deploy_runtime_with_deps.py --prompt prompts/motivational_quotes_bot.txt
 ```
 
-### Step 2: Baseline Deploy
-
-The GitHub Action will automatically deploy to production, creating Version 1.
-
-**Note**: Save the Runtime ARN from the deployment output - you'll need it for testing.
-
-### Step 3: Test Production
-
-```bash
-# Get the runtime ARN from the deployment output, then test:
-python scripts/test_endpoint.py <RUNTIME_ARN> demo-prod-endpoint "What do you do?"
-```
-
-**Expected Output**: "Hello World"
+**Output:**
+- Creates a new runtime with a unique ID
+- Returns Runtime ID, Runtime ARN, and Version number
 
 ---
 
-## Phase 2: The Feature (PR Workflow)
+### 2. Update Runtime
 
-### Step 4: Create Feature Branch
+Update an existing AgentCore Runtime with new code or a different prompt.
 
+**Script:** `update_runtime_with_deps.py`
+
+**Usage:**
 ```bash
-git checkout -b feature/joke-agent
+# Update runtime (keeps existing prompt)
+python3 update_runtime_with_deps.py <runtime_id>
+
+# Update runtime with a new prompt
+python3 update_runtime_with_deps.py <runtime_id> --prompt <path_to_prompt_file>
 ```
 
-### Step 5: Change Agent to Tell Jokes
-
-Edit `agent/agent.py`:
-
-```python
-from strands import Agent
-from bedrock_agentcore import BedrockAgentCoreApp
-
-app = BedrockAgentCoreApp()
-
-# Phase 2: Joke Agent
-agent = Agent(
-    system_prompt="You are a comedian. When asked anything, tell a short, funny joke."
-)
-
-@app.entrypoint
-def invoke(payload):
-    user_message = payload.get("prompt", "")
-    result = agent(user_message)
-    return {"result": result.message}
-
-if __name__ == "__main__":
-    app.run()
-```
-
-### Step 6: Push and Create PR
-
+**Examples:**
 ```bash
-git add agent/agent.py
-git commit -m "Feature: Add joke-telling capability"
-git push origin feature/joke-agent
+# Update runtime keeping current configuration
+python3 update_runtime_with_deps.py test_runtime_with_deps_1234567890-AbCdEfGhIj
 
-# Create PR on GitHub
+# Update runtime with dad joke bot personality
+python3 update_runtime_with_deps.py test_runtime_with_deps_1234567890-AbCdEfGhIj --prompt prompts/dad_joke_bot.txt
+
+# Update runtime with motivational quotes bot personality
+python3 update_runtime_with_deps.py test_runtime_with_deps_1234567890-AbCdEfGhIj --prompt prompts/motivational_quotes_bot.txt
 ```
 
-### Step 7: GitHub Action Creates PR Runtime
-
-The workflow will:
-- Create `demo-pr-{NUMBER}-runtime`
-- Deploy the joke agent
-- Comment the runtime details on the PR (including Runtime ARN for testing)
-
-### Step 8: Test PR Endpoint (Isolation Proof)
-
-```bash
-# Test PR endpoint - should tell a joke (get ARN from PR comment)
-python scripts/test_endpoint.py <PR_RUNTIME_ARN> PR-{NUMBER}-Endpoint "Tell me something"
-
-# Test PROD endpoint - should still say Hello World
-python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Tell me something"
-```
-
-**Key Observation**: Both endpoints work independently. Production is unaffected!
-
-### Step 9: Merge PR
-
-Merge the PR on GitHub. The workflows will:
-1. Delete the PR runtime (cleanup-pr.yml)
-2. Deploy Version 2 to production runtime (deploy-prod.yml)
-
-### Step 10: Verify Production Update
-
-```bash
-python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Tell me something"
-```
-
-**Expected Output**: A joke (Version 2 is now live)
+**Output:**
+- Creates a new version of the runtime
+- Returns Runtime ARN and new Version number
 
 ---
 
-## Phase 3: The Bug & Rollback (Production Safety)
+### 3. Create Endpoint
 
-### Step 11: Create Broken Agent
+Create an endpoint (alias) that points to a specific runtime version.
 
+**Script:** `create_endpoint.py`
+
+**Usage:**
 ```bash
-git checkout -b feature/broken
+# Create endpoint with auto-generated name
+python3 create_endpoint.py <runtime_id> <version>
+
+# Create endpoint with custom name
+python3 create_endpoint.py <runtime_id> <version> <endpoint_name>
 ```
 
-Edit `agent/agent.py`:
-
-```python
-from strands import Agent
-from bedrock_agentcore import BedrockAgentCoreApp
-
-app = BedrockAgentCoreApp()
-
-# Phase 3: Broken Agent
-agent = Agent(
-    system_prompt="ERROR ERROR ERROR SYSTEM MALFUNCTION"
-)
-
-@app.entrypoint
-def invoke(payload):
-    user_message = payload.get("prompt", "")
-    # Intentionally broken
-    raise Exception("Critical system failure!")
-    result = agent(user_message)
-    return {"result": result.message}
-
-if __name__ == "__main__":
-    app.run()
-```
-
-### Step 12: Fast-Forward Merge (Simulate Bad Deploy)
-
+**Examples:**
 ```bash
-git add agent/agent.py
-git commit -m "Hotfix: Update agent (BROKEN)"
-git push origin feature/broken
+# Create endpoint with auto-generated name pointing to version 1
+python3 create_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj 1
 
-# Merge immediately to main (skip PR review)
+# Create production endpoint pointing to version 1
+python3 create_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj 1 prod_deployment
+
+# Create staging endpoint pointing to version 2
+python3 create_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj 2 staging_deployment
 ```
 
-### Step 13: Verify Production is Broken
-
-```bash
-python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Hello"
-```
-
-**Expected Output**: Error or broken response (Version 3 is broken)
-
-### Step 14: Instant Rollback to Version 2
-
-```bash
-./scripts/rollback.sh <PROD_RUNTIME_ID> demo-prod-endpoint 2
-```
-
-### Step 15: Verify Rollback Success
-
-```bash
-python scripts/test_endpoint.py <PROD_RUNTIME_ARN> demo-prod-endpoint "Tell me something"
-```
-
-**Expected Output**: A joke (back to Version 2, instantly!)
-
-**Key Observation**: No rebuild, no redeploy, just a pointer switch. Rollback in seconds!
+**Output:**
+- Endpoint Name
+- Endpoint ARN
+- Confirms version it points to
 
 ---
 
-## Key Takeaways
+### 4. Update Endpoint
 
-1. **PR Isolation**: Each PR gets its own runtime, production stays safe
-2. **Version Management**: All versions exist simultaneously on the shared runtime
-3. **Instant Rollback**: Change version pointers without rebuilding or redeploying
-4. **Clean Workflows**: Automated deployment and cleanup via GitHub Actions
+Update an existing endpoint to point to a different runtime version.
 
-## Production Best Practices
+**Script:** `update_endpoint.py`
 
-While this demo uses a manual rollback script for speed demonstration, production teams typically:
-- Wrap rollback in a manual GitHub Action workflow (workflow_dispatch)
-- Require approval for rollback operations
-- Maintain audit trails via GitOps principles
-- Still benefit from instant pointer switching (no rebuild needed)
-
-## Files Structure
-
+**Usage:**
+```bash
+python3 update_endpoint.py <runtime_id> <endpoint_name> <new_version>
 ```
-.
-├── agent/
-│   ├── agent.py              # Strands agent code
-│   └── requirements.txt      # Dependencies
-├── .github/workflows/
-│   ├── deploy-pr.yml         # PR preview deployments
-│   ├── deploy-prod.yml       # Production deployments
-│   └── cleanup-pr.yml        # PR runtime cleanup
-├── scripts/
-│   ├── test_endpoint.py      # Test endpoint script
-│   └── rollback.sh           # Manual rollback script
-├── deploy.py                 # Deployment helper
-└── README.md                 # This file
+
+**Examples:**
+```bash
+# Update prod_deployment endpoint to point to version 2
+python3 update_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj prod_deployment 2
+
+# Update staging_deployment endpoint to point to version 3
+python3 update_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj staging_deployment 3
 ```
+
+**Output:**
+- Shows current endpoint status and version
+- Confirms update to new version
+- Returns Endpoint ARN
+
+---
+
+### 5. Clean Up Runtime
+
+Delete all custom endpoints and the runtime itself. This is a destructive operation that requires confirmation.
+
+**Script:** `cleanup_runtime.py`
+
+**Usage:**
+```bash
+python3 cleanup_runtime.py <runtime_id>
+```
+
+**Examples:**
+```bash
+# Clean up a runtime (will prompt for confirmation)
+python3 cleanup_runtime.py test_runtime_with_deps_1234567890-AbCdEfGhIj
+```
+
+**What it does:**
+1. Lists all endpoints for the runtime
+2. Deletes all custom endpoints (keeps 'default' endpoint if present)
+3. Verifies each endpoint deletion
+4. Deletes the runtime itself
+5. Waits for and verifies runtime deletion
+
+**Output:**
+- Lists all endpoints found
+- Shows deletion progress for each endpoint
+- Verifies endpoint deletions
+- Confirms runtime deletion with status updates
+- ⚠️ Requires typing 'DELETE' to confirm the operation
+
+**Safety Features:**
+- Interactive confirmation required (type 'DELETE')
+- Preserves 'default' endpoint (if it exists)
+- Verifies each deletion before proceeding
+- Detailed status reporting
+- Error handling with clear messages
+
+---
+
+## Complete Workflow Example
+
+Here's a typical deployment workflow:
+
+```bash
+# 1. Deploy a new runtime with dad joke bot
+python3 deploy_runtime_with_deps.py --prompt prompts/dad_joke_bot.txt
+# Output: Runtime ID: test_runtime_with_deps_1234567890-AbCdEfGhIj, Version: 1
+
+# 2. Create a production endpoint pointing to version 1
+python3 create_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj 1 prod_deployment
+# Output: Endpoint prod_deployment created, pointing to version 1
+
+# 3. Update the runtime with a new personality
+python3 update_runtime_with_deps.py test_runtime_with_deps_1234567890-AbCdEfGhIj --prompt prompts/motivational_quotes_bot.txt
+# Output: New Version: 2
+
+# 4. Update the production endpoint to use the new version
+python3 update_endpoint.py test_runtime_with_deps_1234567890-AbCdEfGhIj prod_deployment 2
+# Output: prod_deployment now points to version 2
+
+# 5. When done, clean up the runtime and all endpoints
+python3 cleanup_runtime.py test_runtime_with_deps_1234567890-AbCdEfGhIj
+# Output: Deletes all custom endpoints, then deletes the runtime
+```
+
+---
+
+## Available Prompts
+
+The repository includes pre-configured prompts in the `prompts/` directory:
+
+- **`dad_joke_bot.txt`** - Responds with dad jokes to everything
+- **`motivational_quotes_bot.txt`** - Provides motivational quotes and encouragement
+
+You can create your own prompt files following the same format.
+
+---
+
+## Agent Structure
+
+The agent code is located in `agent/agent.py` and automatically reads the system prompt from a `system_prompt.txt` file if included in the deployment package.
+
+**Requirements:**
+- `agent/requirements.txt` - Python dependencies
+  - `strands-agents` - Agent framework
+  - `bedrock-agentcore` - AgentCore SDK
+
+---
+
+## Deployment Package Process
+
+The deployment process (handled by `deployment_utils.py`):
+
+1. Installs ARM64-compatible Python dependencies using `uv`
+2. Sets proper POSIX permissions (644 for files, 755 for directories)
+3. Creates a zip package using native `zip` command (preserves permissions)
+4. Adds `agent.py` and optional `system_prompt.txt` to the zip root
+5. Uploads to S3
+6. Creates/updates the runtime via AWS API
+
+---
+
+## Troubleshooting
+
+### Runtime initialization timeout
+- Ensure your agent code doesn't perform heavy operations during import
+- Use lazy initialization for expensive resources
+- Check CloudWatch logs for detailed error messages
+
+### Permission errors
+- The deployment scripts handle permissions automatically
+- If issues persist, verify your IAM role has proper S3 and AgentCore permissions
+
+### Package size limits
+- Maximum 250 MB (zipped), 750 MB (unzipped)
+- The script will warn you if the package exceeds limits
+
+---
+
+## Additional Resources
+
+- See `learnings-build-process.md` for detailed explanation of the build process
+- Check AWS documentation for AgentCore Runtime API details
