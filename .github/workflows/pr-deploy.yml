@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for git diff
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -67,6 +69,9 @@ jobs:
       - name: Determine prompt file
         id: detect_prompt
         run: |
+          # Fetch base branch for comparison
+          git fetch origin ${{ github.base_ref }}
+          
           # Check if any prompt files changed in this PR
           CHANGED_PROMPTS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^prompts/.*\.txt$' || echo "")
           
