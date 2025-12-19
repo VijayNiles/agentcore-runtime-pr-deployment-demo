@@ -33,7 +33,7 @@ def create_endpoint(runtime_id, version, endpoint_name=None):
     try:
         response = client.create_agent_runtime_endpoint(
             agentRuntimeId=runtime_id,
-            endpointName=endpoint_name,
+            name=endpoint_name,
             agentRuntimeVersion=version,
             description=f'Endpoint for runtime {runtime_id} version {version}'
         )
