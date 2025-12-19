@@ -3,6 +3,10 @@ name: Production Promotion
 on:
   workflow_dispatch:
     inputs:
+      runtime_id:
+        description: 'Production runtime ID'
+        required: true
+        type: string
       version:
         description: 'Version number to promote to production'
         required: true
@@ -42,18 +46,12 @@ jobs:
           role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
           aws-region: us-west-2
       
-      - name: Get prod runtime ID
+      - name: Set runtime ID
         id: get_runtime
         run: |
-          RUNTIME_ID=$(python3 -c 'import boto3, sys; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); paginator = client.get_paginator("list_agent_runtimes"); result = [r["agentRuntimeId"] for page in paginator.paginate() for r in page.get("agentRuntimeSummaries", []) if r["agentRuntimeName"] == "prod"]; sys.exit(0) if result and print(result[0]) else sys.exit(1)' 2>&1)
-          
-          if [ $? -ne 0 ]; then
-            echo "Failed to find prod runtime"
-            exit 1
-          fi
-          
+          RUNTIME_ID="${{ github.event.inputs.runtime_id }}"
           echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
-          echo "Found prod runtime: ${RUNTIME_ID}"
+          echo "Using prod runtime: ${RUNTIME_ID}"
       
       - name: Verify version exists
         id: verify_version

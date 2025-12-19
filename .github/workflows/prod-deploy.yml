@@ -220,8 +220,14 @@ jobs:
             2. **Verify functionality** meets requirements
             3. **Promote to production** by running the [Production Promotion workflow](../actions/workflows/prod-promote.yml)
                - Click "Run workflow"
-               - Enter version: \`${version}\`
-               ${prNumber ? `- Enter PR number: \`${prNumber}\` (for cleanup)` : ''}
+               - Enter **runtime_id**: \`${runtimeId}\`
+               - Enter **version**: \`${version}\`
+               ${prNumber ? `- Enter **pr_number**: \`${prNumber}\` (for cleanup)` : ''}
+            
+            **CLI Command:**
+            \`\`\`bash
+            gh workflow run prod-promote.yml -f runtime_id=${runtimeId} -f version=${version}${prNumber ? ` -f pr_number=${prNumber}` : ''}
+            \`\`\`
             
             ### 🔗 Useful Links
             
