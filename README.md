@@ -245,8 +245,8 @@ graph TB
     subgraph "3. Production Promotion IssueOps"
         O[Reviewer Adds approved Label] --> P[prod-promote.yml Triggered]
         P --> Q{prod Endpoint Exists?}
-        Q -->|No| R[Create prod Endpoint → Version N]
-        Q -->|Yes| S[Update prod Endpoint → Version N]
+        Q -->|No| R[Create prod Endpoint to Version N]
+        Q -->|Yes| S[Update prod Endpoint to Version N]
         R --> T[Cleanup PR Runtime]
         S --> T
         T --> U[Close Issue, Add promoted Label]
