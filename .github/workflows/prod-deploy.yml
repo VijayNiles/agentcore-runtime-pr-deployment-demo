@@ -1,0 +1,255 @@
+name: Production Deployment
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'agent/**'
+      - 'prompts/**'
+      - 'deployment_utils.py'
+
+permissions:
+  id-token: write  # Required for OIDC authentication
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+          
+          # Install uv for ARM64 dependency packaging
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
+          aws-region: us-west-2
+      
+      - name: Extract PR number from merge commit
+        id: pr_info
+        run: |
+          # Get the commit message
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $COMMIT_MSG"
+          
+          # Extract PR number from merge commit message (format: "Merge pull request #123")
+          PR_NUMBER=$(echo "$COMMIT_MSG" | grep -oP 'Merge pull request #\K\d+' || echo "")
+          
+          if [ -z "$PR_NUMBER" ]; then
+            # Try alternate format: "title (#123)"
+            PR_NUMBER=$(echo "$COMMIT_MSG" | grep -oP '\(#\K\d+\)' | tr -d ')' || echo "")
+          fi
+          
+          if [ -n "$PR_NUMBER" ]; then
+            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+            echo "Found PR number: ${PR_NUMBER}"
+          else
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "No PR number found - direct push to main"
+          fi
+      
+      - name: Determine prompt file
+        id: detect_prompt
+        run: |
+          # Check if any prompt files changed in this commit
+          CHANGED_PROMPTS=$(git diff --name-only HEAD~1 HEAD | grep '^prompts/.*\.txt$' || echo "")
+          
+          if [ -n "$CHANGED_PROMPTS" ]; then
+            # Use the first changed prompt file
+            PROMPT_FILE=$(echo "$CHANGED_PROMPTS" | head -n 1)
+            echo "prompt_file=${PROMPT_FILE}" >> $GITHUB_OUTPUT
+            echo "Using prompt: ${PROMPT_FILE}"
+          else
+            echo "prompt_file=" >> $GITHUB_OUTPUT
+            echo "No prompt file specified"
+          fi
+      
+      - name: Check if prod runtime exists
+        id: check_prod
+        run: |
+          # Try to find existing prod runtime using update script's lookup function
+          RUNTIME_ID=$(python3 -c 'import boto3; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); paginator = client.get_paginator("list_agent_runtimes"); result = [r["agentRuntimeId"] for page in paginator.paginate() for r in page.get("agentRuntimeSummaries", []) if r["agentRuntimeName"] == "prod"]; print(result[0] if result else "")' 2>&1)
+          
+          if [ -n "$RUNTIME_ID" ] && [ "$RUNTIME_ID" != "" ]; then
+            echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Found existing prod runtime: ${RUNTIME_ID}"
+          else
+            echo "runtime_id=" >> $GITHUB_OUTPUT
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No existing prod runtime found - will create new"
+          fi
+      
+      - name: Deploy new prod runtime
+        if: steps.check_prod.outputs.exists == 'false'
+        id: deploy
+        run: |
+          if [ -n "${{ steps.detect_prompt.outputs.prompt_file }}" ]; then
+            PROMPT_ARG="--prompt ${{ steps.detect_prompt.outputs.prompt_file }}"
+          else
+            PROMPT_ARG=""
+          fi
+          
+          # Deploy and capture output
+          OUTPUT=$(python3 deploy_runtime_with_deps.py --name prod ${PROMPT_ARG} 2>&1)
+          echo "$OUTPUT"
+          
+          # Extract runtime ID, ARN, and version
+          RUNTIME_ID=$(echo "$OUTPUT" | grep -oP 'Runtime ID: \K[^\s]+' | head -1)
+          RUNTIME_ARN=$(echo "$OUTPUT" | grep -oP 'Runtime ARN: \K[^\s]+' | head -1)
+          VERSION=$(echo "$OUTPUT" | grep -oP 'Version: \K[^\s]+' | head -1)
+          
+          echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+          echo "runtime_arn=${RUNTIME_ARN}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      
+      - name: Update existing prod runtime
+        if: steps.check_prod.outputs.exists == 'true'
+        id: update
+        run: |
+          RUNTIME_ID="${{ steps.check_prod.outputs.runtime_id }}"
+          
+          if [ -n "${{ steps.detect_prompt.outputs.prompt_file }}" ]; then
+            PROMPT_ARG="--prompt ${{ steps.detect_prompt.outputs.prompt_file }}"
+          else
+            PROMPT_ARG=""
+          fi
+          
+          # Update and capture output
+          OUTPUT=$(python3 update_runtime_with_deps.py "${RUNTIME_ID}" ${PROMPT_ARG} 2>&1)
+          echo "$OUTPUT"
+          
+          # Extract runtime ARN and version
+          RUNTIME_ARN=$(echo "$OUTPUT" | grep -oP 'Runtime ARN: \K[^\s]+' | head -1)
+          VERSION=$(echo "$OUTPUT" | grep -oP 'New Version: \K[^\s]+' | head -1)
+          
+          echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
+          echo "runtime_arn=${RUNTIME_ARN}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      
+      - name: Get runtime status
+        id: runtime_status
+        run: |
+          if [ "${{ steps.check_prod.outputs.exists }}" == "true" ]; then
+            RUNTIME_ID="${{ steps.update.outputs.runtime_id }}"
+            VERSION="${{ steps.update.outputs.version }}"
+          else
+            RUNTIME_ID="${{ steps.deploy.outputs.runtime_id }}"
+            VERSION="${{ steps.deploy.outputs.version }}"
+          fi
+          
+          # Get runtime details
+          RUNTIME_JSON=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" --region us-west-2)
+          
+          STATUS=$(echo "$RUNTIME_JSON" | jq -r '.status')
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+          
+          # Check current prod endpoint version (if it exists)
+          ENDPOINT_VERSION=$(aws bedrock-agentcore-control get-agent-runtime-endpoint \
+            --agent-runtime-id "${RUNTIME_ID}" \
+            --endpoint-name prod \
+            --region us-west-2 2>/dev/null | jq -r '.targetVersion' || echo "none")
+          
+          echo "current_endpoint_version=${ENDPOINT_VERSION}" >> $GITHUB_OUTPUT
+      
+      - name: Create GitHub issue for manual promotion
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isUpdate = '${{ steps.check_prod.outputs.exists }}' === 'true';
+            const runtimeId = isUpdate ? '${{ steps.update.outputs.runtime_id }}' : '${{ steps.deploy.outputs.runtime_id }}';
+            const version = isUpdate ? '${{ steps.update.outputs.version }}' : '${{ steps.deploy.outputs.version }}';
+            const status = '${{ steps.runtime_status.outputs.status }}';
+            const currentEndpointVersion = '${{ steps.runtime_status.outputs.current_endpoint_version }}';
+            const prNumber = '${{ steps.pr_info.outputs.pr_number }}';
+            const promptFile = '${{ steps.detect_prompt.outputs.prompt_file }}' || 'Default prompt';
+            const commitSha = context.sha.substring(0, 7);
+            
+            const statusEmoji = status === 'READY' ? '✅' : status === 'CREATING' || status === 'UPDATING' ? '⏳' : '❌';
+            
+            let issueTitle = `🚀 Production Deployment Ready - Version ${version}`;
+            if (prNumber) {
+              issueTitle += ` (PR #${prNumber})`;
+            }
+            
+            const issueBody = `## ${isUpdate ? '🔄 Production Runtime Updated' : '🆕 Production Runtime Created'}
+            
+            A new production version has been deployed and is ready for promotion.
+            
+            ### 📋 Deployment Details
+            
+            **Runtime ID**: \`${runtimeId}\`
+            **New Version**: ${version}
+            **Status**: ${statusEmoji} ${status}
+            **Prompt**: \`${promptFile}\`
+            **Commit**: ${commitSha}
+            ${prNumber ? `**Source PR**: #${prNumber}` : '**Source**: Direct push to main'}
+            
+            ### 🎯 Current Production State
+            
+            **Production Endpoint Version**: ${currentEndpointVersion === 'none' ? 'Not yet created' : currentEndpointVersion}
+            ${currentEndpointVersion !== 'none' ? `\n⚠️ **Production is currently serving version ${currentEndpointVersion}**` : ''}
+            
+            ### 📍 S3 Location
+            \`\`\`
+            s3://agentcore-runtime-pr-deployment-demo/prod/v${version}/code.zip
+            \`\`\`
+            
+            ### ✅ Next Steps
+            
+            1. **Test the new version** using the DEFAULT endpoint or version-specific endpoint
+            2. **Verify functionality** meets requirements
+            3. **Promote to production** by running the [Production Promotion workflow](../actions/workflows/prod-promote.yml)
+               - Click "Run workflow"
+               - Enter version: \`${version}\`
+               ${prNumber ? `- Enter PR number: \`${prNumber}\` (for cleanup)` : ''}
+            
+            ### 🔗 Useful Links
+            
+            - [View Runtime in AWS Console](https://us-west-2.console.aws.amazon.com/bedrock/home?region=us-west-2#/agent-runtimes/${runtimeId})
+            - [CloudWatch Logs](https://us-west-2.console.aws.amazon.com/cloudwatch/home?region=us-west-2#logsV2:log-groups)
+            - [Run Promotion Workflow](../actions/workflows/prod-promote.yml)
+            
+            ---
+            
+            ⚠️ **Important**: The production endpoint will continue to serve version ${currentEndpointVersion === 'none' ? 'none (not created yet)' : currentEndpointVersion} until manually promoted.
+            `;
+            
+            // Create the issue
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: issueTitle,
+              body: issueBody,
+              labels: ['deployment', 'production', 'needs-promotion']
+            });
+            
+            console.log(`Created issue #${issue.data.number}`);
+      
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-deployment-logs
+          path: |
+            *.txt
+          retention-days: 30

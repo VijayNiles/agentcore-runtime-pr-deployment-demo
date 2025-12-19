@@ -10,6 +10,7 @@ on:
       - '.github/workflows/pr-deploy.yml'
 
 permissions:
+  id-token: write  # Required for OIDC authentication
   pull-requests: write
   contents: read
 
@@ -20,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for git diff
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,8 +41,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
           aws-region: us-west-2
       
       - name: Check for existing runtime
@@ -67,6 +69,9 @@ jobs:
       - name: Determine prompt file
         id: detect_prompt
         run: |
+          # Fetch base branch for comparison
+          git fetch origin ${{ github.base_ref }}
+          
           # Check if any prompt files changed in this PR
           CHANGED_PROMPTS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^prompts/.*\.txt$' || echo "")
           
