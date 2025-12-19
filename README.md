@@ -695,7 +695,7 @@ When you merge to main, the production runtime gets a new version, but the **`pr
 
 **Zero-Downtime Rollback:** Point the `prod` endpoint back to any previous version instantly without rebuilding artifacts.
 
-### Approval Workflow
+#### Approval Workflow Diagram
 
 ```mermaid
 graph LR
