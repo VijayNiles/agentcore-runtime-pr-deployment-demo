@@ -3,12 +3,8 @@ name: Production Promotion
 on:
   workflow_dispatch:
     inputs:
-      runtime_id:
-        description: 'Production runtime ID'
-        required: true
-        type: string
-      version:
-        description: 'Version number to promote to production'
+      prod_runtime_version:
+        description: 'Production version number to promote'
         required: true
         type: string
       pr_runtime_id:
@@ -46,18 +42,25 @@ jobs:
           role-to-assume: arn:aws:iam::788835021449:role/GitHub-Actions-Role
           aws-region: us-west-2
       
-      - name: Set runtime ID
+      - name: Lookup prod runtime
         id: get_runtime
         run: |
-          RUNTIME_ID="${{ github.event.inputs.runtime_id }}"
+          # Find prod runtime by name
+          RUNTIME_ID=$(python3 -c 'import boto3; client = boto3.client("bedrock-agentcore-control", region_name="us-west-2"); runtime = client.get_agent_runtime(agentRuntimeId="prod"); print(runtime["agentRuntimeId"])' 2>&1)
+          
+          if [ -z "$RUNTIME_ID" ]; then
+            echo "ERROR: Could not find prod runtime"
+            exit 1
+          fi
+          
           echo "runtime_id=${RUNTIME_ID}" >> $GITHUB_OUTPUT
-          echo "Using prod runtime: ${RUNTIME_ID}"
+          echo "Found prod runtime: ${RUNTIME_ID}"
       
       - name: Verify version exists
         id: verify_version
         run: |
           RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ github.event.inputs.prod_runtime_version }}"
           
           # Get runtime details
           RUNTIME_JSON=$(aws bedrock-agentcore-control get-agent-runtime \
@@ -102,7 +105,7 @@ jobs:
         id: create_endpoint
         run: |
           RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ github.event.inputs.prod_runtime_version }}"
           
           echo "Creating prod endpoint for version ${VERSION}..."
           python3 create_endpoint.py "${RUNTIME_ID}" "${VERSION}" prod
@@ -114,7 +117,7 @@ jobs:
         id: update_endpoint
         run: |
           RUNTIME_ID="${{ steps.get_runtime.outputs.runtime_id }}"
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ github.event.inputs.prod_runtime_version }}"
           CURRENT_VERSION="${{ steps.check_endpoint.outputs.current_version }}"
           
           if [ "$VERSION" == "$CURRENT_VERSION" ]; then
@@ -166,8 +169,8 @@ jobs:
         with:
           script: |
             const runtimeId = '${{ steps.get_runtime.outputs.runtime_id }}';
-            const version = '${{ github.event.inputs.version }}';
-            const prNumber = '${{ github.event.inputs.pr_number }}';
+            const version = '${{ github.event.inputs.prod_runtime_version }}';
+            const prRuntimeId = '${{ github.event.inputs.pr_runtime_id }}';
             const endpointArn = '${{ steps.final_state.outputs.endpoint_arn }}';
             const targetVersion = '${{ steps.final_state.outputs.target_version }}';
             const liveVersion = '${{ steps.final_state.outputs.live_version }}';
@@ -188,14 +191,14 @@ jobs:
             summary += `**Target Version**: ${targetVersion}\n`;
             summary += `**Live Version**: ${liveVersion}\n`;
             
-            if (prNumber) {
+            if (prRuntimeId) {
               summary += `\n### 🧹 Cleanup\n\n`;
               if (wasCleanedUp) {
-                summary += `✅ PR #${prNumber} runtime (\`pr_${prNumber}\`) has been cleaned up\n`;
+                summary += `✅ PR runtime (\`${prRuntimeId}\`) has been cleaned up\n`;
                 summary += `- Runtime and endpoints deleted\n`;
                 summary += `- S3 files preserved for audit\n`;
               } else {
-                summary += `⚠️ PR #${prNumber} runtime not found (may already be deleted)\n`;
+                summary += `⚠️ PR runtime (\`${prRuntimeId}\`) cleanup failed\n`;
               }
             }
             
