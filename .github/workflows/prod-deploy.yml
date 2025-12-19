@@ -220,6 +220,7 @@ jobs:
             const status = '${{ steps.runtime_status.outputs.status }}';
             const currentEndpointVersion = '${{ steps.runtime_status.outputs.current_endpoint_version }}';
             const prNumber = '${{ steps.pr_info.outputs.pr_number }}';
+            const prRuntimeId = '${{ steps.get_pr_runtime.outputs.pr_runtime_id }}';
             const promptFile = '${{ steps.detect_prompt.outputs.prompt_file }}' || 'Default prompt';
             const commitSha = context.sha.substring(0, 7);
             
@@ -260,11 +261,11 @@ jobs:
             3. **Promote to production** by running the [Production Promotion workflow](../actions/workflows/prod-promote.yml)
                - Click "Run workflow"
                - Enter **prod_runtime_version**: \`${version}\`
-               ${prNumber ? `- Enter **pr_runtime_id**: \`${{ steps.get_pr_runtime.outputs.pr_runtime_id }}\` (for automatic cleanup)` : ''}
+               ${prNumber && prRuntimeId ? `- Enter **pr_runtime_id**: \`${prRuntimeId}\` (for automatic cleanup)\n` : ''}
             
-            **CLI Command:**
+            **CLI Command (copy-paste ready):**
             \`\`\`bash
-            gh workflow run prod-promote.yml -f prod_runtime_version=${version}${prNumber && '${{ steps.get_pr_runtime.outputs.pr_runtime_id }}' ? ` -f pr_runtime_id=${{ steps.get_pr_runtime.outputs.pr_runtime_id }}` : ''}
+            gh workflow run prod-promote.yml -f prod_runtime_version=${version}${prRuntimeId ? ` -f pr_runtime_id=${prRuntimeId}` : ''}
             \`\`\`
             
             ### 🔗 Useful Links
